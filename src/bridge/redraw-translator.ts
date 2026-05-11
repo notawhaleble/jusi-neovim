@@ -8,6 +8,7 @@ type PartialGridBounds = {
   width: number;
   height: number;
   zIndex: number;
+  compIndex: number;
 };
 
 export class NvimRedrawTranslator {
@@ -36,9 +37,10 @@ export class NvimRedrawTranslator {
           this.handleFloatPos(
             event.args[0],
             event.args[1],
-            event.args[4],
-            event.args[5],
+            event.args[9],
+            event.args[10],
             event.args[7],
+            event.args[8],
             geometry,
           );
           break;
@@ -91,6 +93,7 @@ export class NvimRedrawTranslator {
       width,
       height,
       zIndex: 0,
+      compIndex: 0,
     };
     this.grids.set(gridId, next);
     geometry.push({
@@ -106,6 +109,7 @@ export class NvimRedrawTranslator {
     row: number,
     col: number,
     zIndex: number,
+    compIndex: number,
     geometry: NvimGeometryEvent[],
   ): void {
     const next = {
@@ -113,6 +117,7 @@ export class NvimRedrawTranslator {
       row,
       col,
       zIndex,
+      compIndex,
     };
     this.grids.set(gridId, next);
     geometry.push({
@@ -130,6 +135,7 @@ export class NvimRedrawTranslator {
       width: 0,
       height: 0,
       zIndex: 0,
+      compIndex: 0,
     };
   }
 
@@ -141,6 +147,7 @@ export class NvimRedrawTranslator {
       width: bounds.width,
       height: bounds.height,
       zIndex: bounds.zIndex,
+      compIndex: bounds.compIndex,
     };
   }
 }

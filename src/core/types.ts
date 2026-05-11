@@ -16,10 +16,13 @@ export interface WindowRef {
   tabId: number;
   bufferId: number;
   gridId?: number;
+  gridBounds?: GridBounds;
   row?: number;
   col?: number;
   width?: number;
   height?: number;
+  zIndex?: number;
+  compIndex?: number;
 }
 
 export interface MirrorSpan {
@@ -70,6 +73,7 @@ export interface GridBounds {
   width: number;
   height: number;
   zIndex: number;
+  compIndex: number;
 }
 
 export interface UiSnapshot {
@@ -117,6 +121,12 @@ export interface CmdlineState {
   content: string;
   firstChar: string;
   prompt: string;
+  position: number;
+  indent: number;
+  level: number;
+  specialChar: string;
+  specialShift: boolean;
+  blockLines: string[];
 }
 
 export interface PopupmenuItem {
@@ -133,4 +143,19 @@ export interface PopupmenuState {
   row: number;
   col: number;
   grid: number;
+}
+
+export interface MessageEntry {
+  kind: string;
+  text: string;
+  id: string | number | null;
+}
+
+export interface MessageState {
+  entries: MessageEntry[];
+  showmode: string;
+  showcmd: string;
+  ruler: string;
+  history: MessageEntry[];
+  historyVisible: boolean;
 }

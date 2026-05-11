@@ -10,7 +10,6 @@
         --panel: #232634;
         --text: #d9dde7;
         --muted: #8a90a6;
-        --grid: rgba(255, 255, 255, 0.04);
         --accent: #c6a15b;
         --outline: rgba(198, 161, 91, 0.35);
       }
@@ -24,25 +23,20 @@
         min-height: 100vh;
         font-family: "Iosevka Term", "SF Mono", monospace;
         color: var(--text);
-        background:
-          linear-gradient(180deg, rgba(255,255,255,0.04), transparent 30%),
-          radial-gradient(circle at top right, rgba(198, 161, 91, 0.18), transparent 28%),
-          var(--bg);
+        background: var(--bg);
       }
 
       .shell {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 340px;
+        display: block;
         min-height: 100vh;
       }
 
       .stage {
         position: relative;
+        width: 100vw;
+        height: 100vh;
         overflow: hidden;
-        background-image:
-          linear-gradient(var(--grid) 1px, transparent 1px),
-          linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-        background-size: 18px 18px, 9px 18px;
+        background: var(--bg);
       }
 
       #terminal-screen {
@@ -67,7 +61,6 @@
       #grid-layer-root {
         position: absolute;
         inset: 0;
-        z-index: 0;
       }
 
       .grid-layer {
@@ -83,7 +76,7 @@
         font-variant-ligatures: none;
         letter-spacing: 0;
         color: var(--text);
-        background: transparent;
+        background: var(--bg);
         border: 0;
         pointer-events: auto;
       }
@@ -108,14 +101,13 @@
         height: 18px;
         background: rgba(217, 221, 231, 0.45);
         pointer-events: none;
-        z-index: 1;
+        z-index: 1200;
       }
 
       #window-frame-layer {
         position: absolute;
         inset: 0;
         pointer-events: none;
-        z-index: 4;
       }
 
       #cmdline-layer {
@@ -124,20 +116,46 @@
         right: 0;
         bottom: 0;
         min-height: 18px;
-        padding: 2px 8px;
+        padding: 0;
         font-size: 14px;
         line-height: 18px;
         font-family: "Iosevka Term", "SF Mono", monospace;
         color: #d9dde7;
-        background: rgba(12, 14, 19, 0.96);
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        background: var(--bg);
+        border: 0;
         opacity: 0;
         pointer-events: none;
-        z-index: 5;
+        z-index: 4000;
       }
 
       .cmdline-layer--visible {
         opacity: 1 !important;
+      }
+
+      #cmdline-block-layer {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 18px;
+        display: grid;
+        gap: 0;
+        padding: 0;
+        background: var(--bg);
+        border: 0;
+        box-shadow: none;
+        opacity: 0;
+        pointer-events: none;
+        z-index: 3990;
+      }
+
+      .cmdline-block-layer--visible {
+        opacity: 1 !important;
+      }
+
+      .cmdline-block-line {
+        white-space: pre;
+        font-size: 14px;
+        line-height: 18px;
       }
 
       #popupmenu-layer {
@@ -149,7 +167,7 @@
         box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
         opacity: 0;
         pointer-events: none;
-        z-index: 6;
+        z-index: 4100;
       }
 
       .popupmenu-layer--visible {
@@ -169,56 +187,136 @@
         color: #fff1cf;
       }
 
+      #message-layer {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: grid;
+        gap: 0;
+        opacity: 0;
+        pointer-events: none;
+        z-index: 3900;
+      }
+
+      .message-layer--visible {
+        opacity: 1 !important;
+      }
+
+      .message-entry {
+        min-height: 18px;
+        padding: 0;
+        border: 0;
+        background: var(--bg);
+        box-shadow: none;
+        white-space: pre;
+        overflow: hidden;
+        text-overflow: clip;
+        font-size: 14px;
+        line-height: 18px;
+      }
+
+      .message-entry--emsg,
+      .message-entry--echoerr,
+      .message-entry--lua_error,
+      .message-entry--rpc_error {
+        color: #ff9a9a;
+        background: var(--bg);
+      }
+
+      #message-status-layer {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+        gap: 0;
+        padding: 0;
+        font-size: 14px;
+        line-height: 18px;
+        color: var(--text);
+        background: var(--bg);
+        opacity: 0;
+        pointer-events: none;
+        z-index: 3950;
+      }
+
+      .message-status-layer--visible {
+        opacity: 1 !important;
+      }
+
+      .message-status__center {
+        text-align: center;
+      }
+
+      .message-status__right {
+        text-align: right;
+      }
+
+      #message-history-layer {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: min(760px, calc(100% - 48px));
+        max-height: min(60vh, 640px);
+        overflow: auto;
+        padding: 14px;
+        display: grid;
+        gap: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(12, 14, 19, 0.97);
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+        opacity: 0;
+        pointer-events: none;
+        z-index: 4200;
+      }
+
+      .message-history-layer--visible {
+        opacity: 1 !important;
+      }
+
+      .message-history-entry {
+        padding: 6px 8px;
+        white-space: pre-wrap;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
       .window-frame {
         position: absolute;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+        border: 0;
+        box-shadow: none;
       }
 
       .window-frame--active {
-        border-color: rgba(198, 161, 91, 0.7);
-        box-shadow: inset 0 0 0 1px rgba(198, 161, 91, 0.25);
+        box-shadow: none;
       }
 
       .window-frame__label {
-        position: absolute;
-        top: 0;
-        right: 0;
-        padding: 2px 6px;
-        font-size: 10px;
-        color: rgba(217, 221, 231, 0.78);
-        background: rgba(0, 0, 0, 0.35);
+        display: none;
       }
 
       .stage::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        border-right: 1px solid rgba(255,255,255,0.06);
-        pointer-events: none;
+        content: none;
       }
 
       #web-view-layer {
         position: absolute;
         inset: 0;
-        z-index: 3;
       }
 
       .web-view-box {
         position: absolute;
-        border: 1px solid var(--outline);
-        background: rgba(28, 30, 39, 0.92);
-        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
+        border: 0;
+        background: white;
+        box-shadow: none;
         overflow: hidden;
-        display: grid;
-        grid-template-rows: auto auto minmax(0, 1fr);
+        display: block;
       }
 
       .web-view-box--active {
-        border-color: rgba(198, 161, 91, 0.8);
-        box-shadow:
-          0 14px 40px rgba(0, 0, 0, 0.28),
-          inset 0 0 0 1px rgba(198, 161, 91, 0.25);
+        box-shadow: inset 0 0 0 1px rgba(198, 161, 91, 0.35);
       }
 
       .web-view-box--parked {
@@ -227,15 +325,11 @@
       }
 
       .web-view-box__title {
-        padding: 10px 12px 6px;
-        color: var(--accent);
-        font-size: 13px;
+        display: none;
       }
 
       .web-view-box__meta {
-        padding: 0 12px 8px;
-        color: var(--muted);
-        font-size: 12px;
+        display: none;
       }
 
       .web-view-box__browser {
@@ -246,9 +340,7 @@
       }
 
       .sidebar {
-        padding: 18px;
-        background: rgba(17, 18, 24, 0.88);
-        backdrop-filter: blur(14px);
+        display: none;
       }
 
       .sidebar h1 {
@@ -312,6 +404,14 @@
         <div id="terminal-cursor"></div>
         <div id="window-frame-layer"></div>
         <div id="web-view-layer"></div>
+        <div id="message-layer"></div>
+        <div id="message-status-layer">
+          <div data-role="showmode"></div>
+          <div class="message-status__center" data-role="showcmd"></div>
+          <div class="message-status__right" data-role="ruler"></div>
+        </div>
+        <div id="message-history-layer"></div>
+        <div id="cmdline-block-layer"></div>
         <div id="popupmenu-layer"></div>
         <div id="cmdline-layer"></div>
       </div>

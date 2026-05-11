@@ -30,6 +30,7 @@ function toRendererState(state: EmbeddedSessionState): RendererSessionState {
     grids: state.grids,
     cmdline: state.cmdline,
     popupmenu: state.popupmenu,
+    messages: state.messages,
   };
 }
 
@@ -40,15 +41,31 @@ function estimateGrid(width: number, height: number): { columns: number; lines: 
 }
 
 function isWindowCommandFollower(key: string): boolean {
-  return /^[hjklwHJKLW]$/.test(key);
+  return /^[hjklwHJKLW<>+\-=|_]$/.test(key);
 }
 
 function isEscapeKey(key: string): boolean {
   return key === "Escape";
 }
 
+function isTabKey(key: string): boolean {
+  return key === "Tab";
+}
+
 function isModifierOnlyKey(key: string): boolean {
   return key === "Shift" || key === "Control" || key === "Alt" || key === "Meta";
+}
+
+function shouldBlockShellAccelerator(input: { alt?: boolean; control?: boolean; meta?: boolean; key?: string }): boolean {
+  if (!input.meta) {
+    return false;
+  }
+
+  const key = String(input.key ?? "").toLowerCase();
+  if (key === "r" || (key === "i" && input.alt)) {
+    return false;
+  }
+  return true;
 }
 
 async function createWindow(): Promise<void> {
@@ -64,9 +81,21 @@ async function createWindow(): Promise<void> {
       webviewTag: true,
     },
   });
+  (win as unknown as { setMenu?: (menu: null) => void }).setMenu?.(null);
 
   win.webContents.on("console-message", (_event, _level, message) => {
     console.log("[renderer]", message);
+  });
+  win.webContents.on("before-input-event", (event, input) => {
+    if (input.type === "keyDown" && isTabKey(input.key)) {
+      event.preventDefault();
+      void session.input("<Tab>");
+      return;
+    }
+
+    if (shouldBlockShellAccelerator(input)) {
+      event.preventDefault();
+    }
   });
 
   session.start();
@@ -88,6 +117,11 @@ async function createWindow(): Promise<void> {
     }
 
     contents.on("before-input-event", (event: any, input: any) => {
+      if (shouldBlockShellAccelerator(input)) {
+        event.preventDefault();
+        return;
+      }
+
       if (input.type !== "keyDown" || input.meta || input.alt) {
         return;
       }
@@ -122,6 +156,12 @@ async function createWindow(): Promise<void> {
         return;
       }
 
+      if (isTabKey(key)) {
+        event.preventDefault();
+        void session.input("<Tab>");
+        return;
+      }
+
       if (isEscapeKey(key)) {
         event.preventDefault();
         void session.input("<Esc>");
@@ -130,7 +170,7 @@ async function createWindow(): Promise<void> {
   };
   app.on("web-contents-created", webContentsCreatedHandler);
   const startupCommands = [
-    "set laststatus=0 noshowmode noruler",
+    "set laststatus=2 noshowmode noruler",
     "enew",
     "setlocal buftype=nofile bufhidden=hide noswapfile",
     "call setline(1, ['jusi-neovim', '', 'Left split is a normal Neovim buffer.', 'Right split is a web buffer.', '', 'Keys currently go to Neovim.', 'Resize the window to see grid + web bounds stay in sync.'])",
@@ -159,6 +199,7 @@ async function createWindow(): Promise<void> {
       grids: session.getGridStates(),
       cmdline: session.getCmdlineState(),
       popupmenu: session.getPopupmenuState(),
+      messages: session.getMessageState(),
     });
   });
 

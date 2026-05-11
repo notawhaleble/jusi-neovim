@@ -1,4 +1,11 @@
-import { CmdlineState, GridScreenState, PopupmenuState, PrimaryScreenState, UiSnapshot } from "../core/types.js";
+import {
+  CmdlineState,
+  GridScreenState,
+  MessageState,
+  PopupmenuState,
+  PrimaryScreenState,
+  UiSnapshot,
+} from "../core/types.js";
 import { NvimLayoutController } from "./layout-controller.js";
 import { NvimOverlayState } from "./overlay-state.js";
 import { NvimRedrawTranslator } from "./redraw-translator.js";
@@ -16,6 +23,7 @@ export type RoutedNotificationResult = {
   grids: GridScreenState[];
   cmdline: CmdlineState;
   popupmenu: PopupmenuState;
+  messages: MessageState;
   handled: boolean;
 };
 
@@ -36,6 +44,7 @@ export class NvimNotificationRouter {
           grids: this.screen.getGridStates(),
           cmdline: this.overlays.getCmdline(),
           popupmenu: this.overlays.getPopupmenu(),
+          messages: this.overlays.getMessages(),
           handled: true,
         };
       case "jusi:layout":
@@ -46,6 +55,7 @@ export class NvimNotificationRouter {
           grids: this.screen.getGridStates(),
           cmdline: this.overlays.getCmdline(),
           popupmenu: this.overlays.getPopupmenu(),
+          messages: this.overlays.getMessages(),
           handled: true,
         };
       case "jusi:web-session":
@@ -56,6 +66,7 @@ export class NvimNotificationRouter {
           grids: this.screen.getGridStates(),
           cmdline: this.overlays.getCmdline(),
           popupmenu: this.overlays.getPopupmenu(),
+          messages: this.overlays.getMessages(),
           handled: true,
         };
       case "jusi:web-mirror":
@@ -66,6 +77,7 @@ export class NvimNotificationRouter {
           grids: this.screen.getGridStates(),
           cmdline: this.overlays.getCmdline(),
           popupmenu: this.overlays.getPopupmenu(),
+          messages: this.overlays.getMessages(),
           handled: true,
         };
       default:
@@ -75,6 +87,7 @@ export class NvimNotificationRouter {
           grids: this.screen.getGridStates(),
           cmdline: this.overlays.getCmdline(),
           popupmenu: this.overlays.getPopupmenu(),
+          messages: this.overlays.getMessages(),
           handled: false,
         };
     }
@@ -104,6 +117,10 @@ export class NvimNotificationRouter {
 
   getPopupmenuState(): PopupmenuState {
     return this.overlays.getPopupmenu();
+  }
+
+  getMessageState(): MessageState {
+    return this.overlays.getMessages();
   }
 
   private handleLayout(payload: unknown): void {
@@ -183,6 +200,9 @@ export class NvimNotificationRouter {
               this.asNumber(payload[5]),
               Boolean(payload[6]),
               this.asNumber(payload[7]),
+              this.asNumber(payload[8] ?? 0),
+              this.asNumber(payload[9] ?? payload[4]),
+              this.asNumber(payload[10] ?? payload[5]),
             ],
           });
         } else if ((name === "win_close" || name === "win_hide" || name === "grid_destroy") && payload.length >= 1) {

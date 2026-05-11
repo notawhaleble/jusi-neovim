@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 
-import { NeovimUiAdapter } from "../core/neovim-ui-adapter.js";
-import { NeovimUiState } from "../core/neovim-ui-state.js";
-import { WebBufferRegistry } from "../core/web-buffer-registry.js";
+import { NeovimUiAdapter } from "../../dist/core/neovim-ui-adapter.js";
+import { NeovimUiState } from "../../dist/core/neovim-ui-state.js";
+import { WebBufferRegistry } from "../../dist/core/web-buffer-registry.js";
 
 function buildHarness() {
   const uiState = new NeovimUiState();
@@ -19,7 +19,7 @@ function buildHarness() {
   return { adapter, registry };
 }
 
-function testAttachesWebBufferOnlyInActiveTab(): void {
+function testAttachesWebBufferOnlyInActiveTab() {
   const { adapter, registry } = buildHarness();
 
   adapter.apply({ type: "tab", tabId: 1, currentWindowId: 100 });
@@ -36,7 +36,7 @@ function testAttachesWebBufferOnlyInActiveTab(): void {
   assert.equal(registry.getSession(10)?.lastKnownTabId, 2);
 }
 
-function testDetachesWhenBufferIsNotVisibleInCurrentTab(): void {
+function testDetachesWhenBufferIsNotVisibleInCurrentTab() {
   const { adapter, registry } = buildHarness();
 
   adapter.apply({ type: "tab", tabId: 1, currentWindowId: 101 });
@@ -53,7 +53,7 @@ function testDetachesWhenBufferIsNotVisibleInCurrentTab(): void {
   assert.equal(registry.getSession(10)?.lastKnownTabId, 1);
 }
 
-function testPrefersExistingVisibleWindowWhenWindowListRefreshes(): void {
+function testPrefersExistingVisibleWindowWhenWindowListRefreshes() {
   const { adapter, registry } = buildHarness();
 
   adapter.apply({ type: "tab", tabId: 1, currentWindowId: 100 });

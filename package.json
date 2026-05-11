@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "electron": "npm run build && electron dist/electron/main.js",
     "smoke:live": "npm run build && node dist/smoke/live-session.js",
-    "test": "node --import=tsx src/test/web-buffer-registry.test.ts"
+    "test": "npm run build && node src/test/run-tests.mjs"
   },
   "dependencies": {
     "promised-neovim-client": "^2.0.2"

@@ -94,6 +94,9 @@ export type NvimRedrawEvent =
         anchorCol: number,
         focusable: boolean,
         zIndex: number,
+        compIndex: number,
+        screenRow: number,
+        screenCol: number,
       ];
     }
   | {

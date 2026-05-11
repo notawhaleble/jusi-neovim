@@ -50,6 +50,22 @@ export class NvimScreenState {
             this.applyGridLine(gridId, row, colStart, cells);
           }
           break;
+        case "grid_scroll":
+          for (const payload of payloads) {
+            if (!Array.isArray(payload) || payload.length < 7) {
+              continue;
+            }
+            this.scrollGridRegion(
+              this.asNumber(payload[0]),
+              this.asNumber(payload[1]),
+              this.asNumber(payload[2]),
+              this.asNumber(payload[3]),
+              this.asNumber(payload[4]),
+              this.asNumber(payload[5]),
+              this.asNumber(payload[6]),
+            );
+          }
+          break;
         case "grid_cursor_goto":
           for (const payload of payloads) {
             if (!Array.isArray(payload) || payload.length < 3) {
@@ -154,13 +170,15 @@ export class NvimScreenState {
       }
       const text = this.decodeText(def[0]);
       const repeat = def.length >= 3 ? Math.max(1, this.asNumber(def[2])) : 1;
-      const cellText = text.length === 0 ? " " : text;
       for (let idx = 0; idx < repeat; idx += 1) {
-        if (col >= state.cols) {
-          break;
+        const cells = text.length === 0 ? [" "] : [...text];
+        for (const cellText of cells) {
+          if (col >= state.cols) {
+            break;
+          }
+          current[col] = cellText;
+          col += 1;
         }
-        current[col] = cellText;
-        col += 1;
       }
     }
 
@@ -168,6 +186,54 @@ export class NvimScreenState {
     this.grid.set(gridId, {
       ...state,
       lines,
+    });
+  }
+
+  private scrollGridRegion(
+    gridId: number,
+    top: number,
+    bottom: number,
+    left: number,
+    right: number,
+    rows: number,
+    cols: number,
+  ): void {
+    const state = this.grid.get(gridId);
+    if (!state) {
+      return;
+    }
+
+    const regionTop = Math.max(0, top);
+    const regionBottom = Math.min(state.rows, bottom);
+    const regionLeft = Math.max(0, left);
+    const regionRight = Math.min(state.cols, right);
+    if (regionTop >= regionBottom || regionLeft >= regionRight) {
+      return;
+    }
+
+    const lines = state.lines.map((line) => line.padEnd(state.cols, " ").split(""));
+    const next = lines.map((line) => [...line]);
+
+    for (let row = regionTop; row < regionBottom; row += 1) {
+      for (let col = regionLeft; col < regionRight; col += 1) {
+        const sourceRow = row + rows;
+        const sourceCol = col + cols;
+        if (
+          sourceRow >= regionTop &&
+          sourceRow < regionBottom &&
+          sourceCol >= regionLeft &&
+          sourceCol < regionRight
+        ) {
+          next[row][col] = lines[sourceRow][sourceCol] ?? " ";
+        } else {
+          next[row][col] = " ";
+        }
+      }
+    }
+
+    this.grid.set(gridId, {
+      ...state,
+      lines: next.map((line) => line.join("")),
     });
   }
 

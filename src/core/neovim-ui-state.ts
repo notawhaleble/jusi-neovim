@@ -68,6 +68,17 @@ export class NeovimUiState {
     });
   }
 
+  updateWindowGeometry(windowId: number, patch: Partial<WindowRef>): void {
+    const existing = this.windows.get(windowId);
+    if (!existing) {
+      return;
+    }
+    this.windows.set(windowId, {
+      ...existing,
+      ...patch,
+    });
+  }
+
   getSnapshot(): UiSnapshot {
     return {
       currentTabId: this.currentTabId,

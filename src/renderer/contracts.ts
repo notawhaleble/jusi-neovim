@@ -2,6 +2,7 @@ import {
   AttachedWebView,
   CmdlineState,
   GridScreenState,
+  MessageState,
   PopupmenuState,
   PrimaryScreenState,
   UiSnapshot,
@@ -14,6 +15,7 @@ export interface RendererSessionState {
   grids: GridScreenState[];
   cmdline: CmdlineState;
   popupmenu: PopupmenuState;
+  messages: MessageState;
 }
 
 export interface RendererApi {

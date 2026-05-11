@@ -47,6 +47,11 @@ export class NvimLayoutController {
         if (typeof event.windowId === "number") {
           this.windowGridIds.set(event.windowId, event.bounds.gridId);
           this.uiState.setWindowGridId(event.windowId, event.bounds.gridId);
+          this.uiState.updateWindowGeometry(event.windowId, {
+            zIndex: event.bounds.zIndex,
+            compIndex: event.bounds.compIndex,
+            gridBounds: event.bounds,
+          });
         } else {
           this.reconcileWindowGridIds();
         }
@@ -100,51 +105,47 @@ export class NvimLayoutController {
       url: session.url,
       title: session.title,
       mirror: session.mirror,
-      gridBounds: this.resolveGridBounds(window),
+      gridBounds: this.resolveContentBounds(window),
+    };
+  }
+
+  private resolveContentBounds(window: WindowRef): GridBounds | undefined {
+    if (
+      typeof window.row !== "number" ||
+      typeof window.col !== "number" ||
+      typeof window.width !== "number" ||
+      typeof window.height !== "number"
+    ) {
+      return undefined;
+    }
+
+    const mapped =
+      typeof window.gridId === "number"
+        ? this.gridBounds.get(window.gridId)
+        : this.gridBounds.get(this.windowGridIds.get(window.id) ?? -1);
+    if (!mapped) {
+      return undefined;
+    }
+
+    return {
+      gridId: mapped.gridId,
+      row: window.row,
+      col: window.col,
+      width: window.width,
+      height: window.height,
+      zIndex: mapped.zIndex,
+      compIndex: mapped.compIndex,
     };
   }
 
   private resolveGridBounds(window: WindowRef): GridBounds | undefined {
     if (typeof window.gridId === "number") {
       const mapped = this.gridBounds.get(window.gridId);
-      if (
-        mapped &&
-        typeof window.row === "number" &&
-        typeof window.col === "number" &&
-        typeof window.width === "number" &&
-        typeof window.height === "number"
-      ) {
-        return {
-          gridId: mapped.gridId,
-          row: window.row,
-          col: window.col,
-          width: window.width,
-          height: window.height,
-          zIndex: mapped.zIndex,
-        };
-      }
       return mapped;
     }
     const mappedGridId = this.windowGridIds.get(window.id);
     if (typeof mappedGridId === "number") {
-      const mapped = this.gridBounds.get(mappedGridId);
-      if (
-        mapped &&
-        typeof window.row === "number" &&
-        typeof window.col === "number" &&
-        typeof window.width === "number" &&
-        typeof window.height === "number"
-      ) {
-        return {
-          gridId: mapped.gridId,
-          row: window.row,
-          col: window.col,
-          width: window.width,
-          height: window.height,
-          zIndex: mapped.zIndex,
-        };
-      }
-      return mapped;
+      return this.gridBounds.get(mappedGridId);
     }
     return undefined;
   }
@@ -175,13 +176,20 @@ export class NvimLayoutController {
         continue;
       }
 
+      const windowWidth = window.width;
+      const windowHeight = window.height;
+
       const match = bounds.find((entry) => {
+        const exactSize = entry.width === windowWidth && entry.height === windowHeight;
+        const normalWindowWithStatusline =
+          entry.zIndex === 0 && entry.width === windowWidth && entry.height === windowHeight + 1;
+        const borderedFloatSize =
+          entry.zIndex > 0 && entry.width === windowWidth + 2 && entry.height === windowHeight + 2;
         return (
           !usedGridIds.has(entry.gridId) &&
           entry.row === window.row &&
           entry.col === window.col &&
-          entry.width === window.width &&
-          entry.height === window.height
+          (exactSize || normalWindowWithStatusline || borderedFloatSize)
         );
       });
       if (!match) {
@@ -191,6 +199,11 @@ export class NvimLayoutController {
       usedGridIds.add(match.gridId);
       this.windowGridIds.set(window.id, match.gridId);
       this.uiState.setWindowGridId(window.id, match.gridId);
+      this.uiState.updateWindowGeometry(window.id, {
+        zIndex: match.zIndex,
+        compIndex: match.compIndex,
+        gridBounds: match,
+      });
     }
   }
 }

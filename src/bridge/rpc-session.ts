@@ -2,6 +2,7 @@ import {
   AttachedWebView,
   CmdlineState,
   GridScreenState,
+  MessageState,
   PopupmenuState,
   PrimaryScreenState,
   UiSnapshot,
@@ -27,6 +28,7 @@ export interface EmbeddedSessionState {
   grids: GridScreenState[];
   cmdline: CmdlineState;
   popupmenu: PopupmenuState;
+  messages: MessageState;
 }
 
 export class EmbeddedNvimSession {
@@ -114,6 +116,10 @@ export class EmbeddedNvimSession {
     return this.router.getPopupmenuState();
   }
 
+  getMessageState(): MessageState {
+    return this.router.getMessageState();
+  }
+
   async dispose(): Promise<void> {
     await this.client.dispose();
     this.listeners.clear();
@@ -134,6 +140,7 @@ export class EmbeddedNvimSession {
       grids: this.getGridStates(),
       cmdline: this.getCmdlineState(),
       popupmenu: this.getPopupmenuState(),
+      messages: this.getMessageState(),
     };
   }
 
