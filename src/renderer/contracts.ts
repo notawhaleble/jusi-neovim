@@ -9,6 +9,7 @@ import {
 } from "../core/types.js";
 
 export interface RendererSessionState {
+  debugUi: boolean;
   snapshot: UiSnapshot;
   attachedWebViews: AttachedWebView[];
   screen: PrimaryScreenState;

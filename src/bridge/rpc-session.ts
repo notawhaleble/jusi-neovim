@@ -85,7 +85,6 @@ export class EmbeddedNvimSession {
 
   async input(keys: string): Promise<void> {
     await this.client.request("nvim_input", [keys]);
-    await this.refreshLayoutSnapshot();
   }
 
   route(notification: RawNotification): RoutedNotificationResult {

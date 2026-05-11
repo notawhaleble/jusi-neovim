@@ -126,3 +126,14 @@ by the Electron main process.
 `src/renderer/app.ts` renders only resolved surfaces. It does not invent
 window-to-grid relationships.
 
+`docs/neovim-ui-coverage.md` tracks which Neovim UI events and editor actions
+are currently consumed, intentionally ignored, or still unsupported.
+
+## Launch Flags
+
+Interactive Electron launches use clean Neovim mode by default for
+reproducible debugging. Set `JUSI_NVIM_CLEAN=0` to launch embedded Neovim
+without `--clean` and load the user's normal `~/.config/nvim` configuration.
+
+Debug UI is disabled by default. Set `JUSI_DEBUG_UI=1` to show renderer
+diagnostics and the full state dump.

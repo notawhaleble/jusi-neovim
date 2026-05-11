@@ -103,9 +103,12 @@ export interface PrimaryScreenState {
   rows: number;
   cols: number;
   lines: string[];
+  cells?: ScreenCell[][];
+  runs: ScreenLineRun[][];
   cursor: CursorPosition | null;
   backgroundColor?: string;
   foregroundColor?: string;
+  highlights: Record<number, HighlightAttrs>;
 }
 
 export interface GridScreenState {
@@ -113,7 +116,30 @@ export interface GridScreenState {
   rows: number;
   cols: number;
   lines: string[];
+  cells?: ScreenCell[][];
+  runs: ScreenLineRun[][];
   cursor: CursorPosition | null;
+}
+
+export interface ScreenCell {
+  text: string;
+  highlightId: number;
+}
+
+export interface ScreenLineRun {
+  text: string;
+  highlightId: number;
+}
+
+export interface HighlightAttrs {
+  foreground?: string;
+  background?: string;
+  special?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  undercurl?: boolean;
+  reverse?: boolean;
 }
 
 export interface CmdlineState {

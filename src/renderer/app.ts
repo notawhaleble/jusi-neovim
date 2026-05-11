@@ -1,4 +1,5 @@
-import { AttachedWebView } from "../core/types.js";
+import { AttachedWebView, GridScreenState, HighlightAttrs, ScreenCell, ScreenLineRun } from "../core/types.js";
+import { commandAreaHeight, placePopupmenu } from "./compositor.js";
 import { RendererApi, RendererSessionState } from "./contracts.js";
 
 declare global {
@@ -24,6 +25,8 @@ const persistentViews = new Map<number, HTMLDivElement>();
 const persistentFrames = new Map<number, HTMLDivElement>();
 const persistentGridLayers = new Map<number, HTMLPreElement>();
 let latestState: RendererSessionState | null = null;
+let pendingRenderState: RendererSessionState | null = null;
+let pendingRenderFrame: number | null = null;
 let pendingWindowCommandTimer: ReturnType<typeof setTimeout> | null = null;
 
 function parseHexColor(color: string): [number, number, number] | null {
@@ -49,6 +52,32 @@ function colorDistance(a: string, b: string): number {
   const dg = left[1] - right[1];
   const db = left[2] - right[2];
   return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+function relativeLuminance(color: string): number {
+  const parsed = parseHexColor(color);
+  if (!parsed) {
+    return 0;
+  }
+  const [red, green, blue] = parsed.map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function readableTextColor(background: string): string {
+  return relativeLuminance(background) > 0.45 ? "#000000" : "#d9dde7";
+}
+
+function resolveDefaultForeground(background: string, foreground: string | undefined): string {
+  const candidate = foreground ?? readableTextColor(background);
+  if (colorDistance(background, candidate) < 90) {
+    return readableTextColor(background);
+  }
+  return candidate;
 }
 
 function measureCellMetrics(): void {
@@ -80,6 +109,184 @@ function formatGridLines(lines: string[]): string {
   return lines.map((line) => preserveLeadingBlankCells(line)).join("\n");
 }
 
+function displayCellText(text: string, column: number): string {
+  if (column === 0 && text === " ") {
+    return "\u00a0";
+  }
+  return text;
+}
+
+function displayRunText(text: string, column: number, highlighted: boolean): string {
+  if (highlighted) {
+    return text.replaceAll(" ", "\u00a0");
+  }
+  if (column === 0) {
+    return text.replace(/^ +/, (spaces) => "\u00a0".repeat(spaces.length));
+  }
+  return text;
+}
+
+function styleForHighlight(
+  attrs: HighlightAttrs | undefined,
+  defaults: { foreground: string; background: string },
+): string {
+  if (!attrs) {
+    return "";
+  }
+
+  const sourceForeground = attrs.foreground ?? defaults.foreground;
+  const sourceBackground = attrs.background ?? defaults.background;
+  const foreground = attrs.reverse ? sourceBackground : attrs.foreground;
+  const background = attrs.reverse ? sourceForeground : attrs.background;
+  const styles: string[] = [];
+  if (foreground) {
+    styles.push(`color:${foreground}`);
+  }
+  if (background) {
+    styles.push(`background-color:${background}`);
+  }
+  if (attrs.bold) {
+    styles.push("font-weight:700");
+  }
+  if (attrs.italic) {
+    styles.push("font-style:italic");
+  }
+  if (attrs.underline || attrs.undercurl) {
+    const decoration = attrs.undercurl ? "underline wavy" : "underline";
+    const color = attrs.special ?? foreground ?? defaults.foreground;
+    styles.push(`text-decoration:${decoration}`);
+    styles.push(`text-decoration-color:${color}`);
+  }
+  return styles.join(";");
+}
+
+function renderCellsInto(
+  target: HTMLElement,
+  cells: ScreenCell[][],
+  highlights: Record<number, HighlightAttrs>,
+  defaults: { foreground: string; background: string },
+): void {
+  target.replaceChildren();
+
+  cells.forEach((row, rowIndex) => {
+    if (rowIndex > 0) {
+      target.appendChild(document.createTextNode("\n"));
+    }
+
+    let currentHighlightId: number | null = null;
+    let currentText = "";
+    const flush = () => {
+      if (currentText === "") {
+        return;
+      }
+      if (currentHighlightId === null || currentHighlightId === 0 || !highlights[currentHighlightId]) {
+        target.appendChild(document.createTextNode(currentText));
+      } else {
+        const span = document.createElement("span");
+        span.textContent = currentText.replaceAll(" ", "\u00a0");
+        const style = styleForHighlight(highlights[currentHighlightId], defaults);
+        if (style) {
+          span.setAttribute("style", style);
+        }
+        target.appendChild(span);
+      }
+      currentText = "";
+    };
+
+    row.forEach((cell, column) => {
+      if (currentHighlightId !== cell.highlightId) {
+        flush();
+        currentHighlightId = cell.highlightId;
+      }
+      currentText += displayCellText(cell.text, column);
+    });
+    flush();
+  });
+}
+
+function renderRunsInto(
+  target: HTMLElement,
+  runs: ScreenLineRun[][],
+  highlights: Record<number, HighlightAttrs>,
+  defaults: { foreground: string; background: string },
+): void {
+  target.replaceChildren();
+
+  runs.forEach((row, rowIndex) => {
+    if (rowIndex > 0) {
+      target.appendChild(document.createTextNode("\n"));
+    }
+
+    let column = 0;
+    for (const run of row) {
+      const highlighted = run.highlightId !== 0 && Boolean(highlights[run.highlightId]);
+      const text = displayRunText(run.text, column, highlighted);
+      column += run.text.length;
+
+      if (!highlighted) {
+        target.appendChild(document.createTextNode(text));
+        continue;
+      }
+
+      const span = document.createElement("span");
+      span.textContent = text;
+      const style = styleForHighlight(highlights[run.highlightId], defaults);
+      if (style) {
+        span.setAttribute("style", style);
+      }
+      target.appendChild(span);
+    }
+  });
+}
+
+function renderGridContent(
+  target: HTMLElement,
+  grid: GridScreenState | { lines: string[]; cells?: ScreenCell[][]; runs?: ScreenLineRun[][] },
+  highlights: Record<number, HighlightAttrs>,
+  defaults: { foreground: string; background: string },
+): void {
+  const signature = gridContentSignature(grid, highlights, defaults);
+  if (target.dataset.renderSignature === signature) {
+    return;
+  }
+  target.dataset.renderSignature = signature;
+
+  if (grid.runs && grid.runs.some((row) => row.some((run) => run.highlightId !== 0))) {
+    renderRunsInto(target, grid.runs, highlights, defaults);
+    return;
+  }
+  if (grid.cells && grid.cells.some((row) => row.some((cell) => cell.highlightId !== 0))) {
+    renderCellsInto(target, grid.cells, highlights, defaults);
+    return;
+  }
+  target.textContent = formatGridLines(grid.lines);
+}
+
+function gridContentSignature(
+  grid: GridScreenState | { lines: string[]; cells?: ScreenCell[][]; runs?: ScreenLineRun[][] },
+  highlights: Record<number, HighlightAttrs>,
+  defaults: { foreground: string; background: string },
+): string {
+  if (grid.runs) {
+    return grid.runs
+      .map((row) =>
+        row
+          .map((run) => {
+            const style = run.highlightId === 0 ? "" : styleForHighlight(highlights[run.highlightId], defaults);
+            return `${run.highlightId}:${style}:${run.text}`;
+          })
+          .join("\u001f"),
+      )
+      .join("\u001e");
+  }
+  if (grid.cells) {
+    return grid.cells
+      .map((row) => row.map((cell) => `${cell.highlightId}:${cell.text}`).join("\u001f"))
+      .join("\u001e");
+  }
+  return grid.lines.join("\u001e");
+}
+
 function formatCmdline(state: RendererSessionState["cmdline"], maxColumns: number): string {
   const indent = state.indent > 0 ? " ".repeat(state.indent) : "";
   const base = `${indent}${state.prompt}${state.firstChar}${state.content}`;
@@ -106,16 +313,11 @@ function formatCmdline(state: RendererSessionState["cmdline"], maxColumns: numbe
   return scrollToCursor(`${base.slice(0, cursorIndex)}${state.specialChar}${base.slice(cursorIndex + 1)}`);
 }
 
-function blockHeight(lines: string[]): number {
-  if (lines.length === 0) {
-    return 0;
-  }
-  return lines.length * cellHeight;
-}
-
-function commandAreaHeight(state: RendererSessionState): number {
-  const cmdlineHeight = state.cmdline.visible ? cellHeight : 0;
-  return cmdlineHeight + blockHeight(state.cmdline.blockLines);
+function getCommandAreaHeight(state: RendererSessionState): number {
+  return commandAreaHeight({
+    cmdlineVisible: state.cmdline.visible,
+    blockLineCount: state.cmdline.blockLines.length,
+  }, { cellWidth, cellHeight });
 }
 
 function windowOrder(window: RendererSessionState["snapshot"]["windows"][number]): number {
@@ -389,7 +591,14 @@ function renderGridLayers(state: RendererSessionState): void {
     active.add(grid.gridId);
     const layer = ensureGridLayer(grid.gridId);
     layer.dataset.windowId = String(window.id);
-    layer.textContent = formatGridLines(grid.lines);
+    const background = state.screen.backgroundColor ?? "#16161d";
+    const foreground = resolveDefaultForeground(background, state.screen.foregroundColor);
+    renderGridContent(layer, grid, state.screen.highlights, {
+      foreground,
+      background,
+    });
+    layer.style.backgroundColor = background;
+    layer.style.color = foreground;
     layer.style.zIndex = String(10 + windowOrder(window));
     layer.style.left = `${col * cellWidth}px`;
     layer.style.top = `${row * cellHeight}px`;
@@ -460,7 +669,7 @@ function renderWindowFrames(state: RendererSessionState): void {
 }
 
 function renderMessageLayers(state: RendererSessionState): void {
-  const commandHeight = commandAreaHeight(state);
+  const commandHeight = getCommandAreaHeight(state);
   const messageLayer = document.getElementById("message-layer");
   if (messageLayer) {
     (messageLayer as HTMLElement).style.bottom = `${commandHeight}px`;
@@ -531,14 +740,17 @@ function renderState(state: RendererSessionState): void {
   document.body.dataset.activeWindowId = String(activeTab?.currentWindowId ?? "");
 
   measureCellMetrics();
+  const background = state.screen.backgroundColor ?? "#16161d";
+  const foreground = resolveDefaultForeground(background, state.screen.foregroundColor);
+  document.documentElement.style.setProperty("--bg", background);
+  document.documentElement.style.setProperty("--text", foreground);
+
   const screen = document.getElementById("terminal-screen");
   if (screen) {
-    screen.textContent = formatGridLines(state.screen.lines);
-    const background = state.screen.backgroundColor ?? "#16161d";
-    let foreground = state.screen.foregroundColor ?? "#d9dde7";
-    if (colorDistance(background, foreground) < 90) {
-      foreground = "#d9dde7";
-    }
+    renderGridContent(screen, state.screen, state.screen.highlights, {
+      foreground,
+      background,
+    });
     screen.style.backgroundColor = background;
     screen.style.color = foreground;
   }
@@ -567,6 +779,7 @@ function renderState(state: RendererSessionState): void {
       cursor.style.height = `${cellHeight}px`;
       cursor.style.left = `${(col + activeGridCursor.col) * cellWidth}px`;
       cursor.style.top = `${(row + activeGridCursor.row) * cellHeight}px`;
+      cursor.style.backgroundColor = foreground;
     } else {
       cursor.style.display = "none";
     }
@@ -578,8 +791,10 @@ function renderState(state: RendererSessionState): void {
   setText("#status-webviews", String(state.attachedWebViews.length));
 
   const pre = document.getElementById("state-dump");
-  if (pre) {
+  if (pre && state.debugUi) {
     pre.textContent = JSON.stringify(state, null, 2);
+  } else if (pre && pre.textContent !== "") {
+    pre.textContent = "";
   }
 
   const cmdline = document.getElementById("cmdline-layer");
@@ -603,42 +818,28 @@ function renderState(state: RendererSessionState): void {
     if (state.popupmenu.visible) {
       const stage = document.querySelector(".stage");
       const stageHeight = stage instanceof HTMLElement ? stage.clientHeight : 0;
-      const cmdlineHeight = commandAreaHeight(state);
-      let popupLeft = state.popupmenu.col * cellWidth;
-      let popupTop = state.popupmenu.row * cellHeight;
-      if (state.popupmenu.grid === -1) {
-        popupLeft = 8 + state.popupmenu.col * cellWidth;
-        popupTop = Math.max(0, stageHeight - cmdlineHeight - (state.popupmenu.items.length * cellHeight));
-      } else if (state.popupmenu.grid > 1) {
-        const anchorWindow = state.snapshot.windows.find((window) => {
-          return window.tabId === state.snapshot.currentTabId && window.gridId === state.popupmenu.grid;
-        });
-        if (
-          anchorWindow &&
-          typeof anchorWindow.row === "number" &&
-          typeof anchorWindow.col === "number"
-        ) {
-          popupLeft = (anchorWindow.col + state.popupmenu.col) * cellWidth;
-          popupTop = Math.max(0, (anchorWindow.row + state.popupmenu.row - state.popupmenu.items.length - 1) * cellHeight);
-        }
-      }
+      const stageWidth = stage instanceof HTMLElement ? stage.clientWidth : 0;
+      const commandHeight = getCommandAreaHeight(state);
       popup.classList.add("popupmenu-layer--visible");
-      popup.style.left = `${popupLeft}px`;
-      popup.style.top = `${popupTop}px`;
       state.popupmenu.items.forEach((item, index) => {
         const row = document.createElement("div");
         row.className = "popupmenu-item";
         if (index === state.popupmenu.selected) {
-            row.classList.add("popupmenu-item--selected");
+          row.classList.add("popupmenu-item--selected");
         }
         row.textContent = item.word;
         popup.appendChild(row);
       });
-      if (state.popupmenu.grid === -1) {
-        const popupHeight = popup.getBoundingClientRect().height || (state.popupmenu.items.length * cellHeight);
-        popupTop = Math.max(0, stageHeight - cmdlineHeight - popupHeight);
-        popup.style.top = `${popupTop}px`;
-      }
+      const popupHeight = popup.getBoundingClientRect().height || (state.popupmenu.items.length * cellHeight);
+      const placement = placePopupmenu({
+        popupmenu: state.popupmenu,
+        snapshot: state.snapshot,
+        stage: { width: stageWidth, height: stageHeight, cellWidth, cellHeight },
+        commandAreaHeight: commandHeight,
+        popupHeight,
+      });
+      popup.style.left = `${placement.left}px`;
+      popup.style.top = `${placement.top}px`;
     } else {
       popup.classList.remove("popupmenu-layer--visible");
     }
@@ -648,6 +849,22 @@ function renderState(state: RendererSessionState): void {
   renderGridLayers(state);
   renderWindowFrames(state);
   renderAttachedViews(state.attachedWebViews);
+}
+
+function scheduleRenderState(state: RendererSessionState): void {
+  pendingRenderState = state;
+  document.body.classList.toggle("debug-ui", state.debugUi);
+  if (pendingRenderFrame !== null) {
+    return;
+  }
+  pendingRenderFrame = window.requestAnimationFrame(() => {
+    pendingRenderFrame = null;
+    const next = pendingRenderState;
+    pendingRenderState = null;
+    if (next) {
+      renderState(next);
+    }
+  });
 }
 
 function installPointerRouting(): void {
@@ -854,7 +1071,7 @@ async function boot(): Promise<void> {
   const initial = await window.jusi.getInitialState();
   renderState(initial);
   window.jusi.onStateChanged((state) => {
-    renderState(state);
+    scheduleRenderState(state);
   });
   installResizeSync();
   installPointerRouting();

@@ -1,4 +1,4 @@
-import { GridScreenState, PrimaryScreenState } from "../core/types.js";
+import { GridScreenState, HighlightAttrs, PrimaryScreenState, ScreenCell, ScreenLineRun } from "../core/types.js";
 
 function colorNumberToCss(value: number | null | undefined): string | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
@@ -8,7 +8,8 @@ function colorNumberToCss(value: number | null | undefined): string | undefined 
 }
 
 export class NvimScreenState {
-  private readonly grid = new Map<number, { rows: number; cols: number; lines: string[] }>();
+  private readonly grid = new Map<number, { rows: number; cols: number; cells: ScreenCell[][] }>();
+  private readonly highlights = new Map<number, HighlightAttrs>();
   private cursor: PrimaryScreenState["cursor"] = null;
   private foregroundColor: string | undefined;
   private backgroundColor: string | undefined;
@@ -23,6 +24,14 @@ export class NvimScreenState {
       const payloads = rawEvent.slice(1);
 
       switch (name) {
+        case "hl_attr_define":
+          for (const payload of payloads) {
+            if (!Array.isArray(payload) || payload.length < 2) {
+              continue;
+            }
+            this.highlights.set(this.asNumber(payload[0]), this.decodeHighlightAttrs(payload[1]));
+          }
+          break;
         case "grid_resize":
           for (const payload of payloads) {
             if (!Array.isArray(payload) || payload.length < 3) {
@@ -80,14 +89,10 @@ export class NvimScreenState {
           }
           break;
         case "default_colors_set":
-          if (payloads.length > 0) {
-            const first = payloads[0];
-            if (Array.isArray(first) && first.length >= 2) {
-              this.foregroundColor = colorNumberToCss(this.asNumber(first[0]));
-              this.backgroundColor = colorNumberToCss(this.asNumber(first[1]));
-            } else if (payloads.length >= 2) {
-              this.foregroundColor = colorNumberToCss(this.asNumber(payloads[0]));
-              this.backgroundColor = colorNumberToCss(this.asNumber(payloads[1]));
+          for (const payload of payloads) {
+            if (Array.isArray(payload) && payload.length >= 2) {
+              this.foregroundColor = colorNumberToCss(this.asNumber(payload[0]));
+              this.backgroundColor = colorNumberToCss(this.asNumber(payload[1]));
             }
           }
           break;
@@ -97,29 +102,40 @@ export class NvimScreenState {
     }
   }
 
-  getState(): PrimaryScreenState {
+  getState(includeCells = false): PrimaryScreenState {
     const primaryGrid = this.grid.get(1);
-    const primary = primaryGrid?.lines ?? [];
-    return {
+    const primary = primaryGrid?.cells ?? [];
+    const state: PrimaryScreenState = {
       rows: primaryGrid?.rows ?? 0,
       cols: primaryGrid?.cols ?? 0,
-      lines: primary.map((line) => line.padEnd(primaryGrid?.cols ?? 0, " ")),
+      lines: primary.map((line) => this.cellsToLine(line, primaryGrid?.cols ?? 0)),
+      runs: primary.map((line) => this.cellsToRuns(line, primaryGrid?.cols ?? 0)),
       cursor: this.cursor?.gridId === 1 ? this.cursor : null,
       backgroundColor: this.backgroundColor,
       foregroundColor: this.foregroundColor,
+      highlights: Object.fromEntries(this.highlights.entries()),
     };
+    if (includeCells) {
+      state.cells = primary.map((line) => this.padCells(line, primaryGrid?.cols ?? 0));
+    }
+    return state;
   }
 
-  getGridStates(): GridScreenState[] {
+  getGridStates(includeCells = false): GridScreenState[] {
     const states: GridScreenState[] = [];
     for (const [gridId, state] of this.grid.entries()) {
-      states.push({
+      const gridState: GridScreenState = {
         gridId,
         rows: state.rows,
         cols: state.cols,
-        lines: state.lines.map((line) => line.padEnd(state.cols, " ")),
+        lines: state.cells.map((line) => this.cellsToLine(line, state.cols)),
+        runs: state.cells.map((line) => this.cellsToRuns(line, state.cols)),
         cursor: this.cursor?.gridId === gridId ? this.cursor : null,
-      });
+      };
+      if (includeCells) {
+        gridState.cells = state.cells.map((line) => this.padCells(line, state.cols));
+      }
+      states.push(gridState);
     }
     return states;
   }
@@ -127,15 +143,15 @@ export class NvimScreenState {
   private resizeGrid(gridId: number, cols: number, rows: number): void {
     const normalizedCols = Math.max(0, cols);
     const normalizedRows = Math.max(0, rows);
-    const next: string[] = [];
-    const previous = this.grid.get(gridId)?.lines ?? [];
+    const next: ScreenCell[][] = [];
+    const previous = this.grid.get(gridId)?.cells ?? [];
     for (let row = 0; row < normalizedRows; row += 1) {
-      next[row] = (previous[row] ?? "").slice(0, normalizedCols).padEnd(normalizedCols, " ");
+      next[row] = this.padCells((previous[row] ?? []).slice(0, normalizedCols), normalizedCols);
     }
     this.grid.set(gridId, {
       rows: normalizedRows,
       cols: normalizedCols,
-      lines: next,
+      cells: next,
     });
   }
 
@@ -144,13 +160,13 @@ export class NvimScreenState {
     if (!state) {
       return;
     }
-    const lines: string[] = [];
+    const cells: ScreenCell[][] = [];
     for (let row = 0; row < state.rows; row += 1) {
-      lines[row] = "".padEnd(state.cols, " ");
+      cells[row] = this.blankCells(state.cols);
     }
     this.grid.set(gridId, {
       ...state,
-      lines,
+      cells,
     });
   }
 
@@ -160,32 +176,36 @@ export class NvimScreenState {
       return;
     }
 
-    const lines = state.lines;
-    const current = (lines[row] ?? "").padEnd(state.cols, " ").split("");
+    const cells = state.cells;
+    const current = this.padCells(cells[row] ?? [], state.cols);
     let col = Math.max(0, colStart);
+    let activeHighlightId = 0;
 
     for (const def of defs) {
       if (!Array.isArray(def) || def.length === 0) {
         continue;
       }
       const text = this.decodeText(def[0]);
-      const repeat = def.length >= 3 ? Math.max(1, this.asNumber(def[2])) : 1;
+      if (typeof def[1] === "number") {
+        activeHighlightId = this.asNumber(def[1]);
+      }
+      const repeat = def.length >= 3 ? Math.max(0, this.asNumber(def[2])) : 1;
       for (let idx = 0; idx < repeat; idx += 1) {
         const cells = text.length === 0 ? [" "] : [...text];
         for (const cellText of cells) {
           if (col >= state.cols) {
             break;
           }
-          current[col] = cellText;
+          current[col] = { text: cellText, highlightId: activeHighlightId };
           col += 1;
         }
       }
     }
 
-    lines[row] = current.join("");
+    cells[row] = current;
     this.grid.set(gridId, {
       ...state,
-      lines,
+      cells,
     });
   }
 
@@ -211,8 +231,8 @@ export class NvimScreenState {
       return;
     }
 
-    const lines = state.lines.map((line) => line.padEnd(state.cols, " ").split(""));
-    const next = lines.map((line) => [...line]);
+    const cells = state.cells.map((line) => this.padCells(line, state.cols));
+    const next = cells.map((line) => line.map((cell) => ({ ...cell })));
 
     for (let row = regionTop; row < regionBottom; row += 1) {
       for (let col = regionLeft; col < regionRight; col += 1) {
@@ -224,17 +244,76 @@ export class NvimScreenState {
           sourceCol >= regionLeft &&
           sourceCol < regionRight
         ) {
-          next[row][col] = lines[sourceRow][sourceCol] ?? " ";
+          next[row][col] = cells[sourceRow][sourceCol] ?? this.blankCell();
         } else {
-          next[row][col] = " ";
+          next[row][col] = this.blankCell();
         }
       }
     }
 
     this.grid.set(gridId, {
       ...state,
-      lines: next.map((line) => line.join("")),
+      cells: next,
     });
+  }
+
+  private decodeHighlightAttrs(value: unknown): HighlightAttrs {
+    if (!this.isObject(value)) {
+      return {};
+    }
+
+    return {
+      foreground: colorNumberToCss(this.asOptionalNumber(value.foreground ?? value.fg)),
+      background: colorNumberToCss(this.asOptionalNumber(value.background ?? value.bg)),
+      special: colorNumberToCss(this.asOptionalNumber(value.special ?? value.sp)),
+      bold: value.bold === true ? true : undefined,
+      italic: value.italic === true ? true : undefined,
+      underline: value.underline === true ? true : undefined,
+      undercurl: value.undercurl === true ? true : undefined,
+      reverse: value.reverse === true ? true : undefined,
+    };
+  }
+
+  private cellsToLine(cells: ScreenCell[], cols: number): string {
+    let line = "";
+    for (let col = 0; col < cols; col += 1) {
+      line += cells[col]?.text ?? " ";
+    }
+    return line;
+  }
+
+  private cellsToRuns(cells: ScreenCell[], cols: number): ScreenLineRun[] {
+    const runs: ScreenLineRun[] = [];
+    for (let col = 0; col < cols; col += 1) {
+      const cell = cells[col] ?? this.blankCell();
+      const previous = runs[runs.length - 1];
+      if (previous && previous.highlightId === cell.highlightId) {
+        previous.text += cell.text;
+      } else {
+        runs.push({ text: cell.text, highlightId: cell.highlightId });
+      }
+    }
+    return runs;
+  }
+
+  private padCells(cells: ScreenCell[], cols: number): ScreenCell[] {
+    const next = cells.map((cell) => ({ ...cell }));
+    while (next.length < cols) {
+      next.push(this.blankCell());
+    }
+    return next.slice(0, cols);
+  }
+
+  private blankCells(cols: number): ScreenCell[] {
+    const cells: ScreenCell[] = [];
+    for (let idx = 0; idx < cols; idx += 1) {
+      cells.push(this.blankCell());
+    }
+    return cells;
+  }
+
+  private blankCell(): ScreenCell {
+    return { text: " ", highlightId: 0 };
   }
 
   private decodeText(value: unknown): string {
@@ -253,5 +332,20 @@ export class NvimScreenState {
 
   private asNumber(value: unknown): number {
     return typeof value === "number" ? value : Number(value);
+  }
+
+  private asOptionalNumber(value: unknown): number | undefined {
+    if (typeof value === "number") {
+      return value;
+    }
+    if (value === null || value === undefined) {
+      return undefined;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  private isObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
   }
 }

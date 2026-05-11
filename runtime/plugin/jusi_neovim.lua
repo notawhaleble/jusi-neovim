@@ -176,7 +176,7 @@ vim.api.nvim_create_autocmd({ "WinEnter", "WinNew" }, {
   end,
 })
 
-vim.api.nvim_create_autocmd({ "WinLeave", "VimResized", "WinResized", "WinScrolled" }, {
+vim.api.nvim_create_autocmd({ "WinLeave", "VimResized", "WinResized" }, {
   group = group,
   callback = function()
     schedule_full_snapshot()

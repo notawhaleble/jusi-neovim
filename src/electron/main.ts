@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { PromisedNvimRpcClient } from "../bridge/promised-client.js";
 import { EmbeddedNvimSession, EmbeddedSessionState } from "../bridge/rpc-session.js";
 import { RendererSessionState } from "../renderer/contracts.js";
+import { isTabKey, isWindowCommandFollower, shouldBlockShellAccelerator } from "./key-routing.js";
 
 function currentDir(): string {
   return dirname(fileURLToPath(import.meta.url));
@@ -22,12 +23,23 @@ function preloadScript(): string {
   return join(projectRoot(), "src", "electron", "preload.cjs");
 }
 
+function processEnv(): Record<string, string | undefined> {
+  return (globalThis as unknown as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+}
+
+function shouldLaunchCleanNvim(): boolean {
+  return processEnv().JUSI_NVIM_CLEAN !== "0";
+}
+
 function toRendererState(state: EmbeddedSessionState): RendererSessionState {
+  const env = processEnv();
+  const debugUi = env?.JUSI_DEBUG_UI === "1";
   return {
+    debugUi,
     snapshot: state.snapshot,
     attachedWebViews: state.attachedWebViews,
-    screen: state.screen,
-    grids: state.grids,
+    screen: debugUi ? state.screen : { ...state.screen, cells: undefined },
+    grids: debugUi ? state.grids : state.grids.map((grid) => ({ ...grid, cells: undefined })),
     cmdline: state.cmdline,
     popupmenu: state.popupmenu,
     messages: state.messages,
@@ -40,36 +52,16 @@ function estimateGrid(width: number, height: number): { columns: number; lines: 
   return { columns, lines };
 }
 
-function isWindowCommandFollower(key: string): boolean {
-  return /^[hjklwHJKLW<>+\-=|_]$/.test(key);
-}
-
 function isEscapeKey(key: string): boolean {
   return key === "Escape";
-}
-
-function isTabKey(key: string): boolean {
-  return key === "Tab";
 }
 
 function isModifierOnlyKey(key: string): boolean {
   return key === "Shift" || key === "Control" || key === "Alt" || key === "Meta";
 }
 
-function shouldBlockShellAccelerator(input: { alt?: boolean; control?: boolean; meta?: boolean; key?: string }): boolean {
-  if (!input.meta) {
-    return false;
-  }
-
-  const key = String(input.key ?? "").toLowerCase();
-  if (key === "r" || (key === "i" && input.alt)) {
-    return false;
-  }
-  return true;
-}
-
 async function createWindow(): Promise<void> {
-  const client = await PromisedNvimRpcClient.spawn({ clean: true });
+  const client = await PromisedNvimRpcClient.spawn({ clean: shouldLaunchCleanNvim() });
   const session = new EmbeddedNvimSession(client);
   const win = new BrowserWindow({
     width: 1200,
@@ -99,8 +91,24 @@ async function createWindow(): Promise<void> {
   });
 
   session.start();
-  session.onStateChanged((state) => {
+  let pendingState: EmbeddedSessionState | null = null;
+  let pendingStateTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushPendingState = () => {
+    pendingStateTimer = null;
+    const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
+    if (!pendingState || destroyed) {
+      return;
+    }
+    const state = pendingState;
+    pendingState = null;
     win.webContents.send("jusi:state", toRendererState(state));
+  };
+  session.onStateChanged((state) => {
+    pendingState = state;
+    if (pendingStateTimer) {
+      return;
+    }
+    pendingStateTimer = setTimeout(flushPendingState, 0);
   });
 
   const [contentWidth, contentHeight] = win.getContentSize();
