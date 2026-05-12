@@ -9,6 +9,16 @@ contextBridge.exposeInMainWorld("jusi", {
       listener(state);
     });
   },
+  onWebScroll(listener) {
+    ipcRenderer.on("jusi:web-scroll", (_event, event) => {
+      listener(event);
+    });
+  },
+  onLeaveWebMode(listener) {
+    ipcRenderer.on("jusi:leave-web-mode", () => {
+      listener();
+    });
+  },
   async sendInput(keys) {
     await ipcRenderer.invoke("jusi:input", keys);
   },
@@ -20,5 +30,11 @@ contextBridge.exposeInMainWorld("jusi", {
   },
   async focusWindow(windowId) {
     await ipcRenderer.invoke("jusi:focus-window", windowId);
+  },
+  async setCursor(windowId, row, col) {
+    await ipcRenderer.invoke("jusi:set-cursor", windowId, row, col);
+  },
+  async updateWebMirror(bufferId, mirror) {
+    await ipcRenderer.invoke("jusi:update-web-mirror", bufferId, mirror);
   },
 });

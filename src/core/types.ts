@@ -16,6 +16,8 @@ export interface WindowRef {
   tabId: number;
   bufferId: number;
   gridId?: number;
+  cursor?: BufferCursorPosition;
+  selection?: BufferSelectionRange;
   gridBounds?: GridBounds;
   row?: number;
   col?: number;
@@ -90,7 +92,20 @@ export interface AttachedWebView {
   url: string;
   title?: string;
   mirror?: MirrorDocument;
+  cursor?: BufferCursorPosition;
+  selection?: BufferSelectionRange;
   gridBounds?: GridBounds;
+}
+
+export interface BufferCursorPosition {
+  row: number;
+  col: number;
+}
+
+export interface BufferSelectionRange {
+  start: BufferCursorPosition;
+  end: BufferCursorPosition;
+  linewise?: boolean;
 }
 
 export interface CursorPosition {

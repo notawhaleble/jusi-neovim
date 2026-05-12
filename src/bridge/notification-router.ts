@@ -280,6 +280,8 @@ export class NvimNotificationRouter {
           tabId: payload.tabId,
           bufferId: payload.bufferId,
           gridId: typeof payload.gridId === "number" ? payload.gridId : undefined,
+          cursor: this.asCursor(payload.cursor),
+          selection: this.asSelection(payload.selection),
           row: typeof payload.row === "number" ? payload.row : undefined,
           col: typeof payload.col === "number" ? payload.col : undefined,
           width: typeof payload.width === "number" ? payload.width : undefined,
@@ -309,6 +311,41 @@ export class NvimNotificationRouter {
 
   private asNumber(value: unknown): number {
     return typeof value === "number" ? value : Number(value);
+  }
+
+  private asCursor(value: unknown): { row: number; col: number } | undefined {
+    if (!this.isObject(value)) {
+      return undefined;
+    }
+    const row = this.asNumber(value.row);
+    const col = this.asNumber(value.col);
+    if (!Number.isFinite(row) || !Number.isFinite(col)) {
+      return undefined;
+    }
+    return {
+      row,
+      col,
+    };
+  }
+
+  private asSelection(value: unknown): {
+    start: { row: number; col: number };
+    end: { row: number; col: number };
+    linewise?: boolean;
+  } | undefined {
+    if (!this.isObject(value)) {
+      return undefined;
+    }
+    const start = this.asCursor(value.start);
+    const end = this.asCursor(value.end);
+    if (!start || !end) {
+      return undefined;
+    }
+    return {
+      start,
+      end,
+      linewise: value.linewise === true,
+    };
   }
 
   private asHandleId(value: unknown): number | null {

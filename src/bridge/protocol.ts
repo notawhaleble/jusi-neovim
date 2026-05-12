@@ -30,6 +30,21 @@ export type NvimMetadataEvent =
       tabId: number;
       bufferId: number;
       gridId?: number;
+      cursor?: {
+        row: number;
+        col: number;
+      };
+      selection?: {
+        start: {
+          row: number;
+          col: number;
+        };
+        end: {
+          row: number;
+          col: number;
+        };
+        linewise?: boolean;
+      };
       row?: number;
       col?: number;
       width?: number;

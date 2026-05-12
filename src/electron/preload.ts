@@ -11,6 +11,16 @@ const api: RendererApi = {
       listener(state);
     });
   },
+  onWebScroll(listener): void {
+    ipcRenderer.on("jusi:web-scroll", (_event: unknown, event) => {
+      listener(event);
+    });
+  },
+  onLeaveWebMode(listener): void {
+    ipcRenderer.on("jusi:leave-web-mode", () => {
+      listener();
+    });
+  },
   async sendInput(keys: string): Promise<void> {
     await ipcRenderer.invoke("jusi:input", keys);
   },
@@ -22,6 +32,12 @@ const api: RendererApi = {
   },
   async focusWindow(windowId: number): Promise<void> {
     await ipcRenderer.invoke("jusi:focus-window", windowId);
+  },
+  async setCursor(windowId: number, row: number, col: number): Promise<void> {
+    await ipcRenderer.invoke("jusi:set-cursor", windowId, row, col);
+  },
+  async updateWebMirror(bufferId, mirror): Promise<void> {
+    await ipcRenderer.invoke("jusi:update-web-mirror", bufferId, mirror);
   },
 };
 

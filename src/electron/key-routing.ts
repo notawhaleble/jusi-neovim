@@ -1,5 +1,5 @@
 export function isWindowCommandFollower(key: string): boolean {
-  return /^[hjklwHJKLW<>+\-=|_]$/.test(key);
+  return key.length === 1;
 }
 
 export function isTabKey(key: string): boolean {

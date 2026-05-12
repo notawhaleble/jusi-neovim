@@ -11,6 +11,7 @@ declare module "electron" {
     on(event: string, listener: (...args: any[]) => void): void;
     webContents: {
       send(channel: string, ...args: any[]): void;
+      focus(): void;
       openDevTools(options?: any): void;
       on(event: string, listener: (...args: any[]) => void): void;
       executeJavaScript(code: string): Promise<any>;

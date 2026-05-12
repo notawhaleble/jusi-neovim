@@ -317,12 +317,29 @@
         border: 0;
         background: white;
         box-shadow: none;
-        overflow: hidden;
+        overflow: visible;
         display: block;
       }
 
       .web-view-box--active {
         box-shadow: inset 0 0 0 1px rgba(198, 161, 91, 0.35);
+      }
+
+      .web-view-box--web-mode {
+        box-shadow: 0 0 0 1px rgba(255, 122, 26, 0.55);
+      }
+
+      .web-view-box--web-mode::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 10;
+        box-sizing: border-box;
+        border: 2px solid #ff9f45;
+        outline: 2px solid rgba(255, 255, 255, 0.88);
+        outline-offset: -4px;
+        box-shadow: 0 0 0 1px rgba(255, 159, 69, 0.55), 0 0 14px rgba(255, 159, 69, 0.35);
       }
 
       .web-view-box--parked {
@@ -343,6 +360,21 @@
         height: 100%;
         border: 0;
         background: white;
+      }
+
+      .web-view-box__mirror-cursor {
+        position: absolute;
+        border: 1px solid #4f7cff;
+        background: rgba(79, 124, 255, 0.2);
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55), 0 0 6px rgba(79, 124, 255, 0.45);
+        mix-blend-mode: normal;
+        pointer-events: none;
+        opacity: 0;
+        z-index: 2;
+      }
+
+      .web-view-box__mirror-cursor--visible {
+        opacity: 1;
       }
 
       .sidebar {

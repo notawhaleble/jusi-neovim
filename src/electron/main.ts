@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { PromisedNvimRpcClient } from "../bridge/promised-client.js";
 import { EmbeddedNvimSession, EmbeddedSessionState } from "../bridge/rpc-session.js";
+import { MirrorDocument } from "../core/types.js";
 import { RendererSessionState } from "../renderer/contracts.js";
 import { isTabKey, isWindowCommandFollower, shouldBlockShellAccelerator } from "./key-routing.js";
 
@@ -50,10 +51,6 @@ function estimateGrid(width: number, height: number): { columns: number; lines: 
   const columns = Math.max(20, Math.floor(width / 9));
   const lines = Math.max(8, Math.floor(height / 18));
   return { columns, lines };
-}
-
-function isEscapeKey(key: string): boolean {
-  return key === "Escape";
 }
 
 function isModifierOnlyKey(key: string): boolean {
@@ -110,11 +107,19 @@ async function createWindow(): Promise<void> {
     }
     pendingStateTimer = setTimeout(flushPendingState, 0);
   });
+  session.onWebScroll((event) => {
+    const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
+    if (destroyed) {
+      return;
+    }
+    win.webContents.send("jusi:web-scroll", event);
+  });
 
   const [contentWidth, contentHeight] = win.getContentSize();
   const grid = estimateGrid(contentWidth, contentHeight);
   await session.attachUi(grid.columns, grid.lines);
   const pendingWebviewWindowCommands = new WeakMap<object, ReturnType<typeof setTimeout>>();
+  const pendingWebviewNormalModeCommands = new WeakMap<object, ReturnType<typeof setTimeout>>();
   const webContentsCreatedHandler = (_event: any, contents: any) => {
     if (contents.getType() !== "webview") {
       return;
@@ -123,6 +128,11 @@ async function createWindow(): Promise<void> {
     if (host !== win.webContents) {
       return;
     }
+
+    const leaveWebMode = () => {
+      win.webContents.focus();
+      win.webContents.send("jusi:leave-web-mode");
+    };
 
     contents.on("before-input-event", (event: any, input: any) => {
       if (shouldBlockShellAccelerator(input)) {
@@ -135,6 +145,29 @@ async function createWindow(): Promise<void> {
       }
 
       const key = typeof input.key === "string" ? input.key : "";
+      const pendingNormalTimeout = pendingWebviewNormalModeCommands.get(contents);
+      if (pendingNormalTimeout && isModifierOnlyKey(key)) {
+        return;
+      }
+      if (pendingNormalTimeout) {
+        clearTimeout(pendingNormalTimeout);
+        pendingWebviewNormalModeCommands.delete(contents);
+        if (input.control && key.toLowerCase() === "n") {
+          event.preventDefault();
+          leaveWebMode();
+          return;
+        }
+      }
+
+      if (input.control && (key === "\\" || key === "Backslash" || input.code === "Backslash")) {
+        event.preventDefault();
+        const timeout = setTimeout(() => {
+          pendingWebviewNormalModeCommands.delete(contents);
+        }, 1200);
+        pendingWebviewNormalModeCommands.set(contents, timeout);
+        return;
+      }
+
       const pendingTimeout = pendingWebviewWindowCommands.get(contents);
       if (pendingTimeout && isModifierOnlyKey(key)) {
         return;
@@ -147,7 +180,7 @@ async function createWindow(): Promise<void> {
       if (input.control && key.toLowerCase() === "w") {
         if (pendingTimeout) {
           event.preventDefault();
-          void session.command("wincmd w");
+          void session.command("wincmd w").finally(leaveWebMode);
           return;
         }
         event.preventDefault();
@@ -160,19 +193,8 @@ async function createWindow(): Promise<void> {
 
       if (pendingTimeout && isWindowCommandFollower(key)) {
         event.preventDefault();
-        void session.command(`wincmd ${key}`);
+        void session.command(`wincmd ${key}`).finally(leaveWebMode);
         return;
-      }
-
-      if (isTabKey(key)) {
-        event.preventDefault();
-        void session.input("<Tab>");
-        return;
-      }
-
-      if (isEscapeKey(key)) {
-        event.preventDefault();
-        void session.input("<Esc>");
       }
     });
   };
@@ -227,12 +249,22 @@ async function createWindow(): Promise<void> {
     await session.command(`call win_gotoid(${Number(windowId)})`);
   });
 
+  ipcMain.handle("jusi:set-cursor", async (_event: unknown, windowId: number, row: number, col: number) => {
+    await session.setCursor(Number(windowId), Number(row), Number(col));
+  });
+
+  ipcMain.handle("jusi:update-web-mirror", async (_event: unknown, bufferId: number, mirror: unknown) => {
+    await session.updateWebMirror(Number(bufferId), mirror as MirrorDocument);
+  });
+
   win.on("closed", async () => {
     ipcMain.removeHandler("jusi:get-initial-state");
     ipcMain.removeHandler("jusi:input");
     ipcMain.removeHandler("jusi:resize");
     ipcMain.removeHandler("jusi:command");
     ipcMain.removeHandler("jusi:focus-window");
+    ipcMain.removeHandler("jusi:set-cursor");
+    ipcMain.removeHandler("jusi:update-web-mirror");
     await session.dispose();
   });
 

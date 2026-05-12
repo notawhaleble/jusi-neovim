@@ -32,6 +32,21 @@ export type UiLayoutEvent =
       tabId: number;
       bufferId: number;
       gridId?: number;
+      cursor?: {
+        row: number;
+        col: number;
+      };
+      selection?: {
+        start: {
+          row: number;
+          col: number;
+        };
+        end: {
+          row: number;
+          col: number;
+        };
+        linewise?: boolean;
+      };
       row?: number;
       col?: number;
       width?: number;
@@ -88,6 +103,8 @@ export class NeovimUiAdapter {
           tabId: event.tabId,
           bufferId: event.bufferId,
           gridId: event.gridId,
+          cursor: event.cursor,
+          selection: event.selection,
           row: event.row,
           col: event.col,
           width: event.width,

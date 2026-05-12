@@ -105,6 +105,8 @@ export class NvimLayoutController {
       url: session.url,
       title: session.title,
       mirror: session.mirror,
+      cursor: window.cursor,
+      selection: window.selection,
       gridBounds: this.resolveContentBounds(window),
     };
   }
