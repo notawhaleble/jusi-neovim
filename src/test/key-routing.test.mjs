@@ -18,7 +18,7 @@ function testTabIsReserved() {
 function testShellAcceleratorsAreBlockedConservatively() {
   assert.equal(shouldBlockShellAccelerator({ meta: true, key: "w" }), true);
   assert.equal(shouldBlockShellAccelerator({ meta: true, key: "q" }), true);
-  assert.equal(shouldBlockShellAccelerator({ meta: true, key: "r" }), false);
+  assert.equal(shouldBlockShellAccelerator({ meta: true, key: "r" }), true);
   assert.equal(shouldBlockShellAccelerator({ meta: true, alt: true, key: "i" }), false);
   assert.equal(shouldBlockShellAccelerator({ meta: false, key: "w" }), false);
 }

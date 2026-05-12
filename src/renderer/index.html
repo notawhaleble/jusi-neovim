@@ -26,6 +26,11 @@
         background: var(--bg);
       }
 
+      body.pointer-hidden,
+      body.pointer-hidden * {
+        cursor: none !important;
+      }
+
       .shell {
         display: grid;
         grid-template-columns: minmax(0, 1fr);

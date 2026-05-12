@@ -16,6 +16,16 @@ const api: RendererApi = {
       listener(event);
     });
   },
+  onWebOpenLink(listener): void {
+    ipcRenderer.on("jusi:web-open-link", (_event: unknown, event) => {
+      listener(event);
+    });
+  },
+  onWebEnterMode(listener): void {
+    ipcRenderer.on("jusi:web-enter-mode", (_event: unknown, event) => {
+      listener(event);
+    });
+  },
   onLeaveWebMode(listener): void {
     ipcRenderer.on("jusi:leave-web-mode", () => {
       listener();

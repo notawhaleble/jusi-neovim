@@ -14,6 +14,16 @@ contextBridge.exposeInMainWorld("jusi", {
       listener(event);
     });
   },
+  onWebOpenLink(listener) {
+    ipcRenderer.on("jusi:web-open-link", (_event, event) => {
+      listener(event);
+    });
+  },
+  onWebEnterMode(listener) {
+    ipcRenderer.on("jusi:web-enter-mode", (_event, event) => {
+      listener(event);
+    });
+  },
   onLeaveWebMode(listener) {
     ipcRenderer.on("jusi:leave-web-mode", () => {
       listener();

@@ -37,11 +37,15 @@ const mirrorHashes = new Map<number, string>();
 const mirrorTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const mirrorProjectionTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const mirrorProjectionTokens = new Map<number, number>();
+const webModeFrameStates = new Map<number, boolean>();
+const mirrorCursorSignatures = new Map<number, string>();
+const mirrorSelectionSignatures = new Map<number, string>();
 let webModeBufferId: number | null = null;
 let latestState: RendererSessionState | null = null;
 let pendingRenderState: RendererSessionState | null = null;
 let pendingRenderFrame: number | null = null;
 let pendingWindowCommandTimer: ReturnType<typeof setTimeout> | null = null;
+let pointerHidden = false;
 
 function parseHexColor(color: string): [number, number, number] | null {
   const match = /^#([0-9a-f]{6})$/i.exec(color);
@@ -390,6 +394,10 @@ function updateWebModeClasses(): void {
 }
 
 async function applyWebModeFrame(host: HTMLDivElement, visible: boolean): Promise<void> {
+  const bufferId = Number(host.dataset.bufferId);
+  if (Number.isFinite(bufferId) && webModeFrameStates.get(bufferId) === visible) {
+    return;
+  }
   const browser = host.querySelector("webview") as HTMLElement | null;
   const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
   if (!browser || browser.dataset.domReady !== "1" || !executableBrowser || typeof executableBrowser.executeJavaScript !== "function") {
@@ -397,6 +405,9 @@ async function applyWebModeFrame(host: HTMLDivElement, visible: boolean): Promis
   }
   try {
     await executableBrowser.executeJavaScript(webModeFrameSource(visible));
+    if (Number.isFinite(bufferId)) {
+      webModeFrameStates.set(bufferId, visible);
+    }
   } catch (_error) {
     // The webview can be temporarily unavailable while Electron swaps pages.
   }
@@ -410,11 +421,30 @@ function syncWebModeFrames(): void {
 
 function setWebMode(bufferId: number | null): void {
   webModeBufferId = bufferId;
+  if (bufferId !== null) {
+    showPointer();
+  }
   updateWebModeClasses();
   syncWebModeFrames();
   if (bufferId === null) {
     focusHostSurface();
   }
+}
+
+function hidePointerForKeyboardInput(): void {
+  if (webModeBufferId !== null || pointerHidden) {
+    return;
+  }
+  pointerHidden = true;
+  document.body.classList.add("pointer-hidden");
+}
+
+function showPointer(): void {
+  if (!pointerHidden) {
+    return;
+  }
+  pointerHidden = false;
+  document.body.classList.remove("pointer-hidden");
 }
 
 function syncWebModeToState(state: RendererSessionState): void {
@@ -472,6 +502,9 @@ function ensureViewHost(view: AttachedWebView): HTMLDivElement {
   browser.dataset.domReady = "0";
   browser.addEventListener("dom-ready", () => {
     browser.dataset.domReady = "1";
+    webModeFrameStates.delete(view.bufferId);
+    mirrorCursorSignatures.delete(view.bufferId);
+    mirrorSelectionSignatures.delete(view.bufferId);
     void applyWebModeFrame(host, webModeBufferId === view.bufferId);
     scheduleMirrorRefresh(host);
   });
@@ -480,20 +513,13 @@ function ensureViewHost(view: AttachedWebView): HTMLDivElement {
   });
   browser.addEventListener("focus", () => {
     setWebMode(view.bufferId);
-    scheduleMirrorRefresh(host);
   });
   browser.addEventListener("mousedown", (event) => {
     setWebMode(view.bufferId);
     void moveMirrorCursorToClick(host, event as MouseEvent);
   });
-  browser.addEventListener("click", () => {
-    scheduleMirrorRefresh(host);
-  });
-  browser.addEventListener("keyup", () => {
-    scheduleMirrorRefresh(host);
-  });
   browser.addEventListener("wheel", () => {
-    scheduleMirrorProjection(host, 80, false);
+    scheduleMirrorProjection(host, 80, false, true);
   });
   host.appendChild(browser);
 
@@ -509,35 +535,30 @@ function mirrorExtractorSource(): string {
   return `(() => {
     window.__jusiMirrorNodes = new Map();
     window.__jusiMirrorIndexMap = [];
-    const idForNode = (() => {
-      let next = 1;
-      const ids = new WeakMap();
-      return (node) => {
-        if (!ids.has(node)) {
-          ids.set(node, "dom-" + next++);
-        }
-        const id = ids.get(node);
-        window.__jusiMirrorNodes.set(id, node);
-        return id;
-      };
-    })();
     const maxChars = 200000;
     const collapsibleWhitespace = /[ \\t\\n\\f\\r]/;
     const lines = [];
     const indexMap = [];
     let currentLine = "";
-    let currentSpans = [];
     let currentLineStart = 0;
     let currentLineTop = null;
-    let lastRect = null;
     let lastWasSpace = false;
     let charCount = 0;
+    let currentBlock = null;
+    let currentParent = null;
+    const styleCache = new WeakMap();
     const lineHeight = (() => {
       const style = window.getComputedStyle(document.body || document.documentElement);
       const parsed = Number.parseFloat(style.lineHeight);
       return Number.isFinite(parsed) && parsed > 0 ? parsed : 16;
     })();
     window.__jusiMirrorLineHeight = lineHeight;
+    const getStyle = (element) => {
+      if (!styleCache.has(element)) {
+        styleCache.set(element, window.getComputedStyle(element));
+      }
+      return styleCache.get(element);
+    };
     const applyTextTransform = (text, transform) => {
       const mode = String(transform || "").toLowerCase();
       if (mode === "uppercase") {
@@ -592,6 +613,94 @@ function mirrorExtractorSource(): string {
         ? { text: transformed, offsets }
         : { text: normalized, offsets };
     };
+    const rectsForRange = (node, startOffset, endOffset) => {
+      if (endOffset <= startOffset) {
+        return [];
+      }
+      const range = document.createRange();
+      try {
+        range.setStart(node, Math.max(0, Math.min(startOffset, node.length)));
+        range.setEnd(node, Math.max(0, Math.min(endOffset, node.length)));
+        return Array.from(range.getClientRects())
+          .filter((rect) => rect.width > 0 || rect.height > 0)
+          .map((rect) => ({
+            x: rect.x,
+            y: rect.y,
+            top: rect.top,
+            left: rect.left,
+            width: rect.width,
+            height: rect.height,
+          }));
+      } catch (_error) {
+        return [];
+      } finally {
+        range.detach();
+      }
+    };
+    const firstRectForRange = (node, startOffset, endOffset) => {
+      const rects = rectsForRange(node, startOffset, endOffset);
+      return rects.length > 0 ? rects[0] : null;
+    };
+    const crossesVisualLines = (rects) => {
+      if (rects.length <= 1) {
+        return false;
+      }
+      const firstTop = rects[0].top;
+      return rects.some((rect) => Math.abs(rect.top - firstTop) > lineHeight * 0.6);
+    };
+    const tokenize = (text) => {
+      const tokens = [];
+      let index = 0;
+      while (index < text.length) {
+        const char = text[index];
+        if (char === "\\n") {
+          tokens.push({ type: "newline", start: index, end: index + 1 });
+          index += 1;
+          continue;
+        }
+        if (char === " " || char === "\\t") {
+          const start = index;
+          while (index < text.length && (text[index] === " " || text[index] === "\\t")) {
+            index += 1;
+          }
+          tokens.push({ type: "space", start, end: index });
+          continue;
+        }
+        const start = index;
+        while (index < text.length && text[index] !== " " && text[index] !== "\\t" && text[index] !== "\\n") {
+          index += 1;
+        }
+        tokens.push({ type: "word", start, end: index });
+      }
+      return tokens;
+    };
+    const blockDisplayPattern = /^(block|list-item|table|table-row|table-cell|flex|grid|flow-root)$/;
+    const blockAncestor = (node) => {
+      let element = node.parentElement;
+      const root = document.body || document.documentElement;
+      while (element && element !== root && element !== document.documentElement) {
+        const display = getStyle(element).display || "";
+        if (blockDisplayPattern.test(display)) {
+          return element;
+        }
+        element = element.parentElement;
+      }
+      return node.parentElement;
+    };
+    const separatorTags = new Set(["A", "BUTTON", "LI", "TD", "TH", "OPTION", "SUMMARY"]);
+    const shouldSeparateInlineNodes = (previous, next) => {
+      if (!previous || !next || previous === next || currentLine.length === 0 || currentLine.endsWith(" ")) {
+        return false;
+      }
+      const previousTag = previous.tagName ? previous.tagName.toUpperCase() : "";
+      const nextTag = next.tagName ? next.tagName.toUpperCase() : "";
+      if (separatorTags.has(previousTag) || separatorTags.has(nextTag)) {
+        return true;
+      }
+      const previousDisplay = getStyle(previous).display || "";
+      const nextDisplay = getStyle(next).display || "";
+      return previousDisplay.includes("inline-block") || nextDisplay.includes("inline-block");
+    };
     const isTextNodeVisible = (node) => {
       if (!node || node.nodeType !== Node.TEXT_NODE || !node.parentElement) {
         return false;
@@ -601,44 +710,21 @@ function mirrorExtractorSource(): string {
       if (["SCRIPT","STYLE","NOSCRIPT","TEMPLATE"].includes(tag)) {
         return false;
       }
-      const style = window.getComputedStyle(parent);
-      if (!style || style.display === "none" || style.visibility === "hidden") {
+      if (parent.closest && parent.closest('[aria-hidden="true"], #jusi-neovim-mirror-overlay, #jusi-neovim-web-mode-frame')) {
         return false;
       }
-      if (parent.closest && parent.closest('[aria-hidden="true"]')) {
+      const style = getStyle(parent);
+      if (!style || style.display === "none" || style.visibility === "hidden") {
         return false;
       }
       return true;
     };
-    const rectForCharacter = (node, offset) => {
-      const range = document.createRange();
-      try {
-        range.setStart(node, offset);
-        range.setEnd(node, Math.min(offset + 1, node.length));
-        const rects = range.getClientRects();
-        for (const rect of Array.from(rects)) {
-          if (rect.width > 0 || rect.height > 0) {
-            return {
-              x: rect.x,
-              y: rect.y,
-              width: rect.width,
-              height: rect.height,
-            };
-          }
-        }
-        const rect = range.getBoundingClientRect();
-        return rect && (rect.width > 0 || rect.height > 0)
-          ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-          : null;
-      } catch (_error) {
-        return null;
-      } finally {
-        range.detach();
-      }
-    };
     const flushLine = (includeNewline = true, preserveEmpty = false) => {
+      while (currentLine.endsWith(" ")) {
+        currentLine = currentLine.slice(0, -1);
+        indexMap.pop();
+      }
       if (currentLine.length === 0 && !preserveEmpty) {
-        currentSpans = [];
         currentLineTop = null;
         lastWasSpace = false;
         currentLineStart = indexMap.length;
@@ -650,76 +736,94 @@ function mirrorExtractorSource(): string {
         text: currentLine,
         startIndex: lineStart,
         endIndex: lineStart + currentLine.length,
-        spans: currentSpans,
+        spans: [],
       });
       currentLine = "";
-      currentSpans = [];
       currentLineTop = null;
-      lastRect = null;
       lastWasSpace = false;
       if (includeNewline) {
         indexMap.push(null);
       }
       currentLineStart = indexMap.length;
     };
-    const maybeInsertVisualSeparator = (node, offset, rect) => {
-      if (!rect || !lastRect || currentLine.length === 0 || currentLine.endsWith(" ")) {
+    const pushSyntheticSpace = () => {
+      if (currentLine.length === 0 || currentLine.endsWith(" ")) {
         return;
       }
-      if (Math.abs(rect.y - lastRect.y) > lineHeight * 0.6) {
-        return;
-      }
-      const gap = rect.x - (lastRect.x + lastRect.width);
-      if (gap <= Math.max(3, lineHeight * 0.2)) {
-        return;
-      }
-      const index = currentLine.length;
       currentLine += " ";
-      currentSpans.push({
-        text: " ",
-        startIndex: index,
-        endIndex: index + 1,
-        domNodeId: idForNode(node),
-        domStartOffset: offset,
-        domEndOffset: offset,
-        rects: [],
-        blockHint: "inline",
-      });
       indexMap.push(null);
       charCount += 1;
     };
-    const pushChar = (node, char, offset, rect) => {
+    const pushSpaceRun = (text) => {
+      if (currentLine.length === 0) {
+        return;
+      }
+      for (let index = 0; index < text.length && charCount < maxChars; index += 1) {
+        if (currentLine.endsWith(" ") && text[index] === " ") {
+          continue;
+        }
+        currentLine += text[index];
+        indexMap.push(null);
+        charCount += 1;
+      }
+    };
+    const pushMappedChar = (node, char, offset, rect) => {
       if (char === "\\n") {
         flushLine(true, true);
         return;
       }
-      if (rect && currentLineTop !== null && Math.abs(rect.y - currentLineTop) > lineHeight * 0.6) {
+      if (char === " " && currentLine.length === 0) {
+        return;
+      }
+      if (rect && currentLineTop !== null && Math.abs(rect.top - currentLineTop) > lineHeight * 0.6) {
         flushLine();
       }
       if (currentLine.length === 0) {
         currentLineStart = indexMap.length;
+        currentLineTop = rect ? rect.top : null;
       }
-      maybeInsertVisualSeparator(node, offset, rect);
-      if (rect && currentLineTop === null) {
-        currentLineTop = rect.y;
-      }
-      const index = currentLine.length;
       currentLine += char;
-      currentSpans.push({
-        text: char,
-        startIndex: index,
-        endIndex: index + 1,
-        domNodeId: idForNode(node),
-        domStartOffset: offset,
-        domEndOffset: offset + 1,
-        rects: rect ? [rect] : [],
-        blockHint: "inline",
-      });
-      indexMap.push(rect ? { node, offset } : null);
-      if (rect) {
-        lastRect = rect;
-      }
+      indexMap.push({ node, offset });
       charCount += 1;
+    };
+    const pushMappedRun = (node, text, offsets, start, end, rect) => {
+      if (rect && currentLineTop !== null && Math.abs(rect.top - currentLineTop) > lineHeight * 0.6) {
+        flushLine();
+      }
+      if (currentLine.length === 0) {
+        currentLineStart = indexMap.length;
+        currentLineTop = rect ? rect.top : null;
+      }
+      for (let index = start; index < end && charCount < maxChars; index += 1) {
+        currentLine += text[index];
+        indexMap.push({ node, offset: offsets[index] });
+        charCount += 1;
+      }
+    };
+    const pushWrappedRun = (node, text, offsets, start, end) => {
+      for (let index = start; index < end && charCount < maxChars; index += 1) {
+        const char = text[index];
+        const rect = firstRectForRange(node, offsets[index], offsets[index] + 1);
+        pushMappedChar(node, char, offsets[index], rect);
+      }
+    };
+    const pushToken = (node, text, offsets, token) => {
+      if (token.type === "newline") {
+        flushLine(true, true);
+        return;
+      }
+      if (token.type === "space") {
+        pushSpaceRun(text.slice(token.start, token.end));
+        return;
+      }
+      const startOffset = offsets[token.start];
+      const endOffset = offsets[token.end - 1] + 1;
+      const rects = rectsForRange(node, startOffset, endOffset);
+      if (crossesVisualLines(rects)) {
+        pushWrappedRun(node, text, offsets, token.start, token.end);
+        return;
+      }
+      pushMappedRun(node, text, offsets, token.start, token.end, rects.length > 0 ? rects[0] : null);
     };
     const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
@@ -728,16 +832,24 @@ function mirrorExtractorSource(): string {
     });
     let node = walker.nextNode();
     while (node && charCount < maxChars) {
-      const style = node.parentElement ? window.getComputedStyle(node.parentElement) : null;
+      const parent = node.parentElement;
+      const block = blockAncestor(node);
+      if (currentBlock && block !== currentBlock && currentLine.length > 0) {
+        flushLine();
+      }
+      currentBlock = block;
+      if (shouldSeparateInlineNodes(currentParent, parent)) {
+        pushSyntheticSpace();
+      }
+      currentParent = parent;
+      const style = parent ? getStyle(parent) : null;
       const normalized = normalizeNodeText(node.nodeValue || "", style ? style.whiteSpace : "", style ? style.textTransform : "");
-      for (let index = 0; index < normalized.text.length && charCount < maxChars; index += 1) {
-        const char = normalized.text[index];
-        const offset = normalized.offsets[index];
-        const rect = char === "\\n" ? null : rectForCharacter(node, offset);
-        if (!rect && char !== " " && char !== "\\n") {
-          continue;
+      const tokens = tokenize(normalized.text);
+      for (const token of tokens) {
+        if (charCount >= maxChars) {
+          break;
         }
-        pushChar(node, char, offset, rect);
+        pushToken(node, normalized.text, normalized.offsets, token);
       }
       node = walker.nextNode();
     }
@@ -1292,6 +1404,45 @@ function mirrorClickIndexSource(x: number, y: number): string {
   })()`;
 }
 
+function mirrorLinkTargetSource(index: number): string {
+  return `(() => {
+    const indexMap = window.__jusiMirrorIndexMap || [];
+    const requestedIndex = Math.max(0, Math.floor(${index}));
+    const nearestMappedIndex = (start, direction) => {
+      let cursor = Math.max(0, Math.min(start, indexMap.length - 1));
+      while (cursor >= 0 && cursor < indexMap.length) {
+        if (indexMap[cursor]) {
+          return cursor;
+        }
+        cursor += direction;
+      }
+      return null;
+    };
+    const targetIndex = indexMap[requestedIndex] ? requestedIndex : nearestMappedIndex(requestedIndex, -1) ?? nearestMappedIndex(requestedIndex, 1);
+    if (targetIndex === null || !indexMap[targetIndex] || !indexMap[targetIndex].node) {
+      return false;
+    }
+    let element = indexMap[targetIndex].node.parentElement;
+    const link = element && element.closest ? element.closest("a[href], area[href]") : null;
+    if (!link) {
+      return null;
+    }
+    const rects = Array.from(link.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const visibleRect = rects.find((rect) =>
+      rect.right > 0 && rect.bottom > 0 && rect.left < viewportWidth && rect.top < viewportHeight
+    ) || rects[0];
+    if (!visibleRect) {
+      return null;
+    }
+    return {
+      x: Math.max(0, Math.floor(visibleRect.left + Math.min(visibleRect.width / 2, Math.max(1, visibleRect.width - 1)))),
+      y: Math.max(0, Math.floor(visibleRect.top + Math.min(visibleRect.height / 2, Math.max(1, visibleRect.height - 1)))),
+    };
+  })()`;
+}
+
 function mirrorHash(mirror: MirrorDocument): string {
   return mirror.lines.map((line) => line.text).join("\n");
 }
@@ -1333,7 +1484,7 @@ function scheduleMirrorRefresh(host: HTMLDivElement): void {
   }, 250));
 }
 
-function scheduleMirrorProjection(host: HTMLDivElement, delay: number, autoScroll = true): void {
+function scheduleMirrorProjection(host: HTMLDivElement, delay: number, autoScroll = true, force = false): void {
   const bufferId = Number(host.dataset.bufferId);
   if (!Number.isFinite(bufferId)) {
     return;
@@ -1349,7 +1500,7 @@ function scheduleMirrorProjection(host: HTMLDivElement, delay: number, autoScrol
       return;
     }
     const activeTab = latestState.snapshot.tabs.find((tab) => tab.id === latestState?.snapshot.currentTabId);
-    void projectMirrorCursor(host, view, view.windowId === activeTab?.currentWindowId ? view.cursor ?? null : null, autoScroll);
+    void projectMirrorCursor(host, view, view.windowId === activeTab?.currentWindowId ? view.cursor ?? null : null, autoScroll, force);
   }, delay));
 }
 
@@ -1449,10 +1600,62 @@ async function handleWebScroll(event: { bufferId: number; windowId: number; line
   } catch (_error) {
     return;
   }
-  await projectMirrorCursor(host, view, view.cursor ?? null, false);
+  await projectMirrorCursor(host, view, view.cursor ?? null, false, true);
+}
+
+async function handleWebOpenLink(event: { bufferId: number; windowId: number }): Promise<void> {
+  const host = persistentViews.get(event.bufferId);
+  const view = latestAttachedViews.get(event.bufferId);
+  const browser = host?.querySelector("webview") as HTMLElement | null;
+  const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
+  if (
+    !host ||
+    !view ||
+    view.windowId !== event.windowId ||
+    !view.cursor ||
+    !view.mirror ||
+    !browser ||
+    browser.dataset.domReady !== "1" ||
+    !executableBrowser ||
+    typeof executableBrowser.executeJavaScript !== "function"
+  ) {
+    return;
+  }
+
+  const line = view.mirror.lines[view.cursor.row];
+  if (!line) {
+    return;
+  }
+  const index = line.startIndex + Math.max(0, Math.min(view.cursor.col, line.text.length));
+  try {
+    const target = await executableBrowser.executeJavaScript(mirrorLinkTargetSource(index)) as { x: number; y: number } | null;
+    const inputBrowser = browser as HTMLElement & {
+      sendInputEvent?: (event: { type: string; x: number; y: number; button?: string; clickCount?: number }) => void;
+    };
+    if (!target || !Number.isFinite(target.x) || !Number.isFinite(target.y) || typeof inputBrowser.sendInputEvent !== "function") {
+      return;
+    }
+    inputBrowser.sendInputEvent({ type: "mouseDown", x: target.x, y: target.y, button: "left", clickCount: 1 });
+    inputBrowser.sendInputEvent({ type: "mouseUp", x: target.x, y: target.y, button: "left", clickCount: 1 });
+  } catch (_error) {
+    return;
+  }
+}
+
+async function handleWebEnterMode(event: { bufferId: number; windowId: number }): Promise<void> {
+  const host = persistentViews.get(event.bufferId);
+  const view = latestAttachedViews.get(event.bufferId);
+  const browser = host?.querySelector("webview") as (HTMLElement & { focus?: () => void }) | null;
+  if (!host || !view || view.windowId !== event.windowId || !browser) {
+    return;
+  }
+  setWebMode(event.bufferId);
+  browser.focus?.();
+  await projectMirrorCursor(host, view, view.cursor ?? null, false, true);
 }
 
 async function projectMirrorSelection(host: HTMLDivElement, view: AttachedWebView): Promise<void> {
+  const bufferId = Number(host.dataset.bufferId);
   const browser = host.querySelector("webview") as HTMLElement | null;
   const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
   if (!browser || !executableBrowser || typeof executableBrowser.executeJavaScript !== "function") {
@@ -1463,8 +1666,14 @@ async function projectMirrorSelection(host: HTMLDivElement, view: AttachedWebVie
   }
 
   if (!view.mirror || !view.selection) {
+    if (Number.isFinite(bufferId) && mirrorSelectionSignatures.get(bufferId) === "clear") {
+      return;
+    }
     try {
       await executableBrowser.executeJavaScript(mirrorSelectionClearSource());
+      if (Number.isFinite(bufferId)) {
+        mirrorSelectionSignatures.set(bufferId, "clear");
+      }
     } catch (_error) {
       // The webview can become temporarily non-executable while Electron swaps pages.
     }
@@ -1474,8 +1683,14 @@ async function projectMirrorSelection(host: HTMLDivElement, view: AttachedWebVie
   const startLine = view.mirror.lines[view.selection.start.row];
   const endLine = view.mirror.lines[view.selection.end.row];
   if (!startLine || !endLine) {
+    if (Number.isFinite(bufferId) && mirrorSelectionSignatures.get(bufferId) === "clear") {
+      return;
+    }
     try {
       await executableBrowser.executeJavaScript(mirrorSelectionClearSource());
+      if (Number.isFinite(bufferId)) {
+        mirrorSelectionSignatures.set(bufferId, "clear");
+      }
     } catch (_error) {
       // The webview can become temporarily non-executable while Electron swaps pages.
     }
@@ -1495,8 +1710,16 @@ async function projectMirrorSelection(host: HTMLDivElement, view: AttachedWebVie
     endIndex = tmp;
   }
 
+  const signature = `${view.mirror.version}:${startIndex}:${endIndex}:${view.selection.linewise ? 1 : 0}`;
+  if (Number.isFinite(bufferId) && mirrorSelectionSignatures.get(bufferId) === signature) {
+    return;
+  }
+
   try {
     await executableBrowser.executeJavaScript(mirrorSelectionProjectionSource(startIndex, endIndex));
+    if (Number.isFinite(bufferId)) {
+      mirrorSelectionSignatures.set(bufferId, signature);
+    }
   } catch (_error) {
     return;
   }
@@ -1521,6 +1744,9 @@ function updateViewHost(host: HTMLDivElement, view: AttachedWebView): void {
   if (browser && browser.dataset.currentUrl !== view.url) {
     browser.dataset.currentUrl = view.url;
     browser.dataset.domReady = "0";
+    webModeFrameStates.delete(view.bufferId);
+    mirrorCursorSignatures.delete(view.bufferId);
+    mirrorSelectionSignatures.delete(view.bufferId);
     browser.src = view.url;
   }
 }
@@ -1530,7 +1756,9 @@ async function projectMirrorCursor(
   view: AttachedWebView,
   cursor: { row: number; col: number } | null,
   autoScroll = true,
+  force = false,
 ): Promise<void> {
+  const bufferId = Number(host.dataset.bufferId);
   const marker = host.querySelector(".web-view-box__mirror-cursor") as HTMLElement | null;
   if (!marker) {
     return;
@@ -1546,8 +1774,14 @@ async function projectMirrorCursor(
   }
 
   if (!cursor || !view.mirror) {
+    if (!force && Number.isFinite(bufferId) && mirrorCursorSignatures.get(bufferId) === "clear") {
+      return;
+    }
     try {
       await executableBrowser.executeJavaScript(mirrorProjectionClearSource());
+      if (Number.isFinite(bufferId)) {
+        mirrorCursorSignatures.set(bufferId, "clear");
+      }
     } catch (_error) {
       // The webview can become temporarily non-executable while Electron swaps pages.
     }
@@ -1555,8 +1789,14 @@ async function projectMirrorCursor(
   }
   const line = view.mirror.lines[cursor.row];
   if (!line) {
+    if (!force && Number.isFinite(bufferId) && mirrorCursorSignatures.get(bufferId) === "clear") {
+      return;
+    }
     try {
       await executableBrowser.executeJavaScript(mirrorProjectionClearSource());
+      if (Number.isFinite(bufferId)) {
+        mirrorCursorSignatures.set(bufferId, "clear");
+      }
     } catch (_error) {
       // The webview can become temporarily non-executable while Electron swaps pages.
     }
@@ -1564,6 +1804,10 @@ async function projectMirrorCursor(
   }
   const col = Math.max(0, Math.min(cursor.col, line.text.length));
   const index = line.startIndex + col;
+  const signature = `${view.mirror.version}:${index}:${autoScroll ? 1 : 0}`;
+  if (!force && Number.isFinite(bufferId) && mirrorCursorSignatures.get(bufferId) === signature) {
+    return;
+  }
 
   const token = (mirrorProjectionTokens.get(view.bufferId) ?? 0) + 1;
   mirrorProjectionTokens.set(view.bufferId, token);
@@ -1578,9 +1822,16 @@ async function projectMirrorCursor(
   if (mirrorProjectionTokens.get(view.bufferId) !== token || !rect) {
     try {
       await executableBrowser.executeJavaScript(mirrorProjectionClearSource());
+      if (Number.isFinite(bufferId)) {
+        mirrorCursorSignatures.set(bufferId, "clear");
+      }
     } catch (_error) {
       // The webview can become temporarily non-executable while Electron swaps pages.
     }
+    return;
+  }
+  if (Number.isFinite(bufferId)) {
+    mirrorCursorSignatures.set(bufferId, signature);
   }
 }
 
@@ -2240,6 +2491,12 @@ function installResizeSync(): void {
   sync();
 }
 
+function installPointerVisibility(): void {
+  window.addEventListener("mousemove", showPointer);
+  window.addEventListener("pointerdown", showPointer);
+  window.addEventListener("wheel", showPointer);
+}
+
 async function boot(): Promise<void> {
   const initial = await window.jusi.getInitialState();
   renderState(initial);
@@ -2249,15 +2506,23 @@ async function boot(): Promise<void> {
   window.jusi.onWebScroll((event) => {
     void handleWebScroll(event);
   });
+  window.jusi.onWebOpenLink((event) => {
+    void handleWebOpenLink(event);
+  });
+  window.jusi.onWebEnterMode((event) => {
+    void handleWebEnterMode(event);
+  });
   window.jusi.onLeaveWebMode(() => {
     setWebMode(null);
   });
   installResizeSync();
   installPointerRouting();
+  installPointerVisibility();
 
   window.addEventListener("keydown", (event) => {
     void dispatchKey(event).then((handled) => {
       if (handled) {
+        hidePointerForKeyboardInput();
         event.preventDefault();
       }
     });

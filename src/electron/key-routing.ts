@@ -12,7 +12,7 @@ export function shouldBlockShellAccelerator(input: { alt?: boolean; meta?: boole
   }
 
   const key = String(input.key ?? "").toLowerCase();
-  if (key === "r" || (key === "i" && input.alt)) {
+  if (key === "i" && input.alt) {
     return false;
   }
   return true;

@@ -56,10 +56,8 @@ async function testUpdateWebMirrorWritesBufferAndEmitsState() {
     ],
   });
 
-  assert.deepEqual(client.requests[0], {
-    method: "nvim_buf_set_lines",
-    args: [3, 0, -1, false, ["hello", "world"]],
-  });
+  assert.equal(client.requests[0].method, "nvim_exec_lua");
+  assert.deepEqual(client.requests[0].args[1], [3, ["hello", "world"]]);
   assert.ok(emitted);
 }
 
@@ -80,6 +78,40 @@ async function testWebScrollNotificationIsForwarded() {
   assert.deepEqual(emitted, { bufferId: 3, windowId: 1000, lines: 2 });
 }
 
+async function testWebOpenLinkNotificationIsForwarded() {
+  const client = new FakeClient();
+  const session = new EmbeddedNvimSession(client);
+  let emitted = null;
+  session.onWebOpenLink((event) => {
+    emitted = event;
+  });
+
+  session.start();
+  client.listener({
+    method: "jusi:web-open-link",
+    args: [{ bufferId: 3, windowId: 1000 }],
+  });
+
+  assert.deepEqual(emitted, { bufferId: 3, windowId: 1000 });
+}
+
+async function testWebEnterModeNotificationIsForwarded() {
+  const client = new FakeClient();
+  const session = new EmbeddedNvimSession(client);
+  let emitted = null;
+  session.onWebEnterMode((event) => {
+    emitted = event;
+  });
+
+  session.start();
+  client.listener({
+    method: "jusi:web-enter-mode",
+    args: [{ bufferId: 3, windowId: 1000 }],
+  });
+
+  assert.deepEqual(emitted, { bufferId: 3, windowId: 1000 });
+}
+
 async function testSetCursorUsesLuaBridge() {
   const client = new FakeClient();
   const session = new EmbeddedNvimSession(client);
@@ -91,10 +123,25 @@ async function testSetCursorUsesLuaBridge() {
   assert.equal(client.requests[1].method, "nvim_exec_lua");
 }
 
+async function testSetRegisterUsesNvimFunction() {
+  const client = new FakeClient();
+  const session = new EmbeddedNvimSession(client);
+
+  await session.setRegister("*", "https://example.com/");
+
+  assert.deepEqual(client.requests[0], {
+    method: "nvim_call_function",
+    args: ["setreg", ["*", "https://example.com/"]],
+  });
+}
+
 await testInputDoesNotRefreshLayoutSnapshot();
 await testCommandsStillRefreshLayoutSnapshot();
 await testUpdateWebMirrorWritesBufferAndEmitsState();
 await testWebScrollNotificationIsForwarded();
+await testWebOpenLinkNotificationIsForwarded();
+await testWebEnterModeNotificationIsForwarded();
 await testSetCursorUsesLuaBridge();
+await testSetRegisterUsesNvimFunction();
 
 console.log("rpc-session tests passed");

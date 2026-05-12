@@ -57,6 +57,26 @@ function isModifierOnlyKey(key: string): boolean {
   return key === "Shift" || key === "Control" || key === "Alt" || key === "Meta";
 }
 
+function isFullscreenToggleInput(input: { type?: string; key?: string; control?: boolean; meta?: boolean }): boolean {
+  if (input.type !== "keyDown") {
+    return false;
+  }
+  const key = String(input.key ?? "");
+  return key === "F11" || (input.control === true && input.meta === true && key.toLowerCase() === "f");
+}
+
+function isWebviewReloadInput(input: { type?: string; key?: string; control?: boolean; meta?: boolean }): boolean {
+  return input.type === "keyDown" && (input.meta === true || input.control === true) && String(input.key ?? "").toLowerCase() === "r";
+}
+
+function toggleFullscreen(win: BrowserWindow): void {
+  const fullscreenWindow = win as unknown as {
+    isFullScreen?: () => boolean;
+    setFullScreen?: (fullscreen: boolean) => void;
+  };
+  fullscreenWindow.setFullScreen?.(!(fullscreenWindow.isFullScreen?.() ?? false));
+}
+
 async function createWindow(): Promise<void> {
   const client = await PromisedNvimRpcClient.spawn({ clean: shouldLaunchCleanNvim() });
   const session = new EmbeddedNvimSession(client);
@@ -76,6 +96,12 @@ async function createWindow(): Promise<void> {
     console.log("[renderer]", message);
   });
   win.webContents.on("before-input-event", (event, input) => {
+    if (isFullscreenToggleInput(input)) {
+      event.preventDefault();
+      toggleFullscreen(win);
+      return;
+    }
+
     if (input.type === "keyDown" && isTabKey(input.key)) {
       event.preventDefault();
       void session.input("<Tab>");
@@ -114,6 +140,20 @@ async function createWindow(): Promise<void> {
     }
     win.webContents.send("jusi:web-scroll", event);
   });
+  session.onWebOpenLink((event) => {
+    const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
+    if (destroyed) {
+      return;
+    }
+    win.webContents.send("jusi:web-open-link", event);
+  });
+  session.onWebEnterMode((event) => {
+    const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
+    if (destroyed) {
+      return;
+    }
+    win.webContents.send("jusi:web-enter-mode", event);
+  });
 
   const [contentWidth, contentHeight] = win.getContentSize();
   const grid = estimateGrid(contentWidth, contentHeight);
@@ -135,6 +175,18 @@ async function createWindow(): Promise<void> {
     };
 
     contents.on("before-input-event", (event: any, input: any) => {
+      if (isFullscreenToggleInput(input)) {
+        event.preventDefault();
+        toggleFullscreen(win);
+        return;
+      }
+
+      if (isWebviewReloadInput(input)) {
+        event.preventDefault();
+        contents.reload?.();
+        return;
+      }
+
       if (shouldBlockShellAccelerator(input)) {
         event.preventDefault();
         return;
@@ -165,6 +217,29 @@ async function createWindow(): Promise<void> {
           pendingWebviewNormalModeCommands.delete(contents);
         }, 1200);
         pendingWebviewNormalModeCommands.set(contents, timeout);
+        return;
+      }
+
+      if (input.control && key.toLowerCase() === "l") {
+        event.preventDefault();
+        const url = typeof contents.getURL === "function" ? contents.getURL() : "";
+        void session.setRegister("*", url);
+        return;
+      }
+
+      if (input.control && key.toLowerCase() === "o") {
+        event.preventDefault();
+        if (typeof contents.canGoBack !== "function" || contents.canGoBack()) {
+          contents.goBack?.();
+        }
+        return;
+      }
+
+      if (input.control && (key.toLowerCase() === "i" || key === "Tab")) {
+        event.preventDefault();
+        if (typeof contents.canGoForward !== "function" || contents.canGoForward()) {
+          contents.goForward?.();
+        }
         return;
       }
 

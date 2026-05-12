@@ -38,12 +38,24 @@ export interface WebScrollEvent {
   lines: number;
 }
 
+export interface WebOpenLinkEvent {
+  bufferId: number;
+  windowId: number;
+}
+
+export interface WebEnterModeEvent {
+  bufferId: number;
+  windowId: number;
+}
+
 export class EmbeddedNvimSession {
   private readonly layout = new NvimLayoutController();
   private readonly router = new NvimNotificationRouter(this.layout);
   private attached = false;
   private readonly listeners = new Set<(state: EmbeddedSessionState) => void>();
   private readonly webScrollListeners = new Set<(event: WebScrollEvent) => void>();
+  private readonly webOpenLinkListeners = new Set<(event: WebOpenLinkEvent) => void>();
+  private readonly webEnterModeListeners = new Set<(event: WebEnterModeEvent) => void>();
 
   constructor(private readonly client: NvimRpcClient) {}
 
@@ -55,6 +67,14 @@ export class EmbeddedNvimSession {
     this.client.onNotification((notification) => {
       if (notification.method === "jusi:web-scroll") {
         this.emitWebScroll(notification.args[0]);
+        return;
+      }
+      if (notification.method === "jusi:web-open-link") {
+        this.emitWebOpenLink(notification.args[0]);
+        return;
+      }
+      if (notification.method === "jusi:web-enter-mode") {
+        this.emitWebEnterMode(notification.args[0]);
         return;
       }
       const result = this.router.route(notification);
@@ -70,6 +90,14 @@ export class EmbeddedNvimSession {
 
   onWebScroll(listener: (event: WebScrollEvent) => void): void {
     this.webScrollListeners.add(listener);
+  }
+
+  onWebOpenLink(listener: (event: WebOpenLinkEvent) => void): void {
+    this.webOpenLinkListeners.add(listener);
+  }
+
+  onWebEnterMode(listener: (event: WebEnterModeEvent) => void): void {
+    this.webEnterModeListeners.add(listener);
   }
 
   async attachUi(columns: number, lines: number): Promise<void> {
@@ -103,9 +131,30 @@ export class EmbeddedNvimSession {
     await this.client.request("nvim_input", [keys]);
   }
 
+  async setRegister(name: string, value: string): Promise<void> {
+    await this.client.request("nvim_call_function", ["setreg", [name, value]]);
+  }
+
   async updateWebMirror(bufferId: number, mirror: MirrorDocument): Promise<void> {
     const lines = mirror.lines.map((line) => line.text);
-    await this.client.request("nvim_buf_set_lines", [bufferId, 0, -1, false, lines]);
+    await this.client.request("nvim_exec_lua", [
+      `
+      local bufnr, lines = ...
+      bufnr = tonumber(bufnr)
+      if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+      local modifiable = vim.api.nvim_get_option_value("modifiable", { buf = bufnr })
+      local readonly = vim.api.nvim_get_option_value("readonly", { buf = bufnr })
+      vim.api.nvim_set_option_value("modifiable", true, { buf = bufnr })
+      vim.api.nvim_set_option_value("readonly", false, { buf = bufnr })
+      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+      vim.api.nvim_set_option_value("modified", false, { buf = bufnr })
+      vim.api.nvim_set_option_value("readonly", readonly, { buf = bufnr })
+      vim.api.nvim_set_option_value("modifiable", modifiable, { buf = bufnr })
+      `,
+      [bufferId, lines],
+    ]);
     this.route({
       method: "jusi:web-mirror",
       args: [{
@@ -179,6 +228,8 @@ export class EmbeddedNvimSession {
     await this.client.dispose();
     this.listeners.clear();
     this.webScrollListeners.clear();
+    this.webOpenLinkListeners.clear();
+    this.webEnterModeListeners.clear();
   }
 
   private emitWebScroll(payload: unknown): void {
@@ -194,6 +245,36 @@ export class EmbeddedNvimSession {
     }
     for (const listener of this.webScrollListeners) {
       listener({ bufferId, windowId, lines });
+    }
+  }
+
+  private emitWebOpenLink(payload: unknown): void {
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+    const event = payload as { bufferId?: unknown; windowId?: unknown };
+    const bufferId = Number(event.bufferId);
+    const windowId = Number(event.windowId);
+    if (!Number.isFinite(bufferId) || !Number.isFinite(windowId)) {
+      return;
+    }
+    for (const listener of this.webOpenLinkListeners) {
+      listener({ bufferId, windowId });
+    }
+  }
+
+  private emitWebEnterMode(payload: unknown): void {
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+    const event = payload as { bufferId?: unknown; windowId?: unknown };
+    const bufferId = Number(event.bufferId);
+    const windowId = Number(event.windowId);
+    if (!Number.isFinite(bufferId) || !Number.isFinite(windowId)) {
+      return;
+    }
+    for (const listener of this.webEnterModeListeners) {
+      listener({ bufferId, windowId });
     }
   }
 

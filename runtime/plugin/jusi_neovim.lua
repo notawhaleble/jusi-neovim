@@ -208,6 +208,11 @@ end
 function M.open_web_buffer(url)
   local bufnr = vim.api.nvim_get_current_buf()
   M.set_buffer_kind("web", bufnr)
+  vim.api.nvim_set_option_value("buftype", "nofile", { buf = bufnr })
+  vim.api.nvim_set_option_value("bufhidden", "hide", { buf = bufnr })
+  vim.api.nvim_set_option_value("swapfile", false, { buf = bufnr })
+  vim.api.nvim_set_option_value("readonly", true, { buf = bufnr })
+  vim.api.nvim_set_option_value("modifiable", false, { buf = bufnr })
   M.apply_web_buffer_maps(bufnr)
   notify("jusi:web-session", {
     bufferId = bufnr,
@@ -223,6 +228,24 @@ function M.notify_web_scroll(delta)
     windowId = winid,
     bufferId = bufnr,
     lines = delta,
+  })
+end
+
+function M.open_link_under_cursor()
+  local winid = vim.api.nvim_get_current_win()
+  local bufnr = vim.api.nvim_win_get_buf(winid)
+  notify("jusi:web-open-link", {
+    windowId = winid,
+    bufferId = bufnr,
+  })
+end
+
+function M.enter_web_mode()
+  local winid = vim.api.nvim_get_current_win()
+  local bufnr = vim.api.nvim_win_get_buf(winid)
+  notify("jusi:web-enter-mode", {
+    windowId = winid,
+    bufferId = bufnr,
   })
 end
 
@@ -246,6 +269,20 @@ function M.apply_web_buffer_maps(bufnr)
 
   map_scroll("<C-e>", 1, "<C-e>")
   map_scroll("<C-y>", -1, "<C-y>")
+  vim.keymap.set("n", "<C-j>", function()
+    M.open_link_under_cursor()
+  end, {
+    buffer = bufnr,
+    remap = false,
+    silent = true,
+  })
+  vim.keymap.set("n", "i", function()
+    M.enter_web_mode()
+  end, {
+    buffer = bufnr,
+    remap = false,
+    silent = true,
+  })
   vim.b[bufnr].jusi_web_buffer_maps = 1
 end
 

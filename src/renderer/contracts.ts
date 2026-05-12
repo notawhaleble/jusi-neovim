@@ -24,6 +24,8 @@ export interface RendererApi {
   getInitialState(): Promise<RendererSessionState>;
   onStateChanged(listener: (state: RendererSessionState) => void): void;
   onWebScroll(listener: (event: { bufferId: number; windowId: number; lines: number }) => void): void;
+  onWebOpenLink(listener: (event: { bufferId: number; windowId: number }) => void): void;
+  onWebEnterMode(listener: (event: { bufferId: number; windowId: number }) => void): void;
   onLeaveWebMode(listener: () => void): void;
   sendInput(keys: string): Promise<void>;
   resize(columns: number, lines: number): Promise<void>;
