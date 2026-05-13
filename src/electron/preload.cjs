@@ -29,6 +29,21 @@ contextBridge.exposeInMainWorld("jusi", {
       listener();
     });
   },
+  onAppZoom(listener) {
+    ipcRenderer.on("jusi:app-zoom", (_event, event) => {
+      listener(event);
+    });
+  },
+  onWebZoomed(listener) {
+    ipcRenderer.on("jusi:web-zoomed", () => {
+      listener();
+    });
+  },
+  onWebOpenActiveLink(listener) {
+    ipcRenderer.on("jusi:web-open-active-link", () => {
+      listener();
+    });
+  },
   async sendInput(keys) {
     await ipcRenderer.invoke("jusi:input", keys);
   },

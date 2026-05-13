@@ -31,6 +31,21 @@ const api: RendererApi = {
       listener();
     });
   },
+  onAppZoom(listener): void {
+    ipcRenderer.on("jusi:app-zoom", (_event: unknown, event) => {
+      listener(event);
+    });
+  },
+  onWebZoomed(listener): void {
+    ipcRenderer.on("jusi:web-zoomed", () => {
+      listener();
+    });
+  },
+  onWebOpenActiveLink(listener): void {
+    ipcRenderer.on("jusi:web-open-active-link", () => {
+      listener();
+    });
+  },
   async sendInput(keys: string): Promise<void> {
     await ipcRenderer.invoke("jusi:input", keys);
   },

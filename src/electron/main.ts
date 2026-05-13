@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, Menu } from "electron";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,6 +7,11 @@ import { EmbeddedNvimSession, EmbeddedSessionState } from "../bridge/rpc-session
 import { MirrorDocument } from "../core/types.js";
 import { RendererSessionState } from "../renderer/contracts.js";
 import { isTabKey, isWindowCommandFollower, shouldBlockShellAccelerator } from "./key-routing.js";
+
+const appDisplayName = "Jusi Neovim";
+const appLogoFile = "jusi-neovim-logo.png";
+
+app.setName(appDisplayName);
 
 function currentDir(): string {
   return dirname(fileURLToPath(import.meta.url));
@@ -22,6 +27,43 @@ function rendererHtml(): string {
 
 function preloadScript(): string {
   return join(projectRoot(), "src", "electron", "preload.cjs");
+}
+
+function appIcon(): string {
+  return join(projectRoot(), "assets", appLogoFile);
+}
+
+function currentPlatform(): string {
+  return (globalThis as unknown as { process?: { platform?: string } }).process?.platform ?? "";
+}
+
+function configureAppIdentity(): void {
+  app.setName(appDisplayName);
+  app.setAboutPanelOptions?.({
+    applicationName: appDisplayName,
+    iconPath: appIcon(),
+  });
+  app.dock?.setIcon(appIcon());
+
+  if (currentPlatform() === "darwin") {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      {
+        label: appDisplayName,
+        submenu: [
+          { role: "about" },
+          { type: "separator" },
+          { role: "hide" },
+          { role: "hideOthers" },
+          { role: "unhide" },
+          { type: "separator" },
+          { role: "quit" },
+        ],
+      },
+    ]));
+    return;
+  }
+
+  Menu.setApplicationMenu(null);
 }
 
 function processEnv(): Record<string, string | undefined> {
@@ -49,7 +91,7 @@ function toRendererState(state: EmbeddedSessionState): RendererSessionState {
 
 function estimateGrid(width: number, height: number): { columns: number; lines: number } {
   const columns = Math.max(20, Math.floor(width / 9));
-  const lines = Math.max(8, Math.floor(height / 18));
+  const lines = Math.max(8, Math.floor(height / 18) - 1);
   return { columns, lines };
 }
 
@@ -65,6 +107,24 @@ function isFullscreenToggleInput(input: { type?: string; key?: string; control?:
   return key === "F11" || (input.control === true && input.meta === true && key.toLowerCase() === "f");
 }
 
+function appZoomActionForInput(input: { type?: string; key?: string; code?: string; control?: boolean; meta?: boolean }): "in" | "out" | "reset" | null {
+  if (input.type !== "keyDown" || (input.meta !== true && input.control !== true)) {
+    return null;
+  }
+  const key = String(input.key ?? "");
+  const code = String(input.code ?? "");
+  if (key === "+" || key === "=" || code === "Equal" || code === "NumpadAdd") {
+    return "in";
+  }
+  if (key === "-" || code === "Minus" || code === "NumpadSubtract") {
+    return "out";
+  }
+  if (key === "0" || code === "Digit0" || code === "Numpad0") {
+    return "reset";
+  }
+  return null;
+}
+
 function isWebviewReloadInput(input: { type?: string; key?: string; control?: boolean; meta?: boolean }): boolean {
   return input.type === "keyDown" && (input.meta === true || input.control === true) && String(input.key ?? "").toLowerCase() === "r";
 }
@@ -77,10 +137,25 @@ function toggleFullscreen(win: BrowserWindow): void {
   fullscreenWindow.setFullScreen?.(!(fullscreenWindow.isFullScreen?.() ?? false));
 }
 
+function applyWebviewZoom(contents: any, action: "in" | "out" | "reset"): void {
+  const current = typeof contents.getZoomFactor === "function" ? Number(contents.getZoomFactor()) : 1;
+  const base = Number.isFinite(current) && current > 0 ? current : 1;
+  const next = action === "reset"
+    ? 1
+    : action === "in"
+      ? base * 1.1
+      : base / 1.1;
+  const clamped = Math.max(0.3, Math.min(3, next));
+  contents.setZoomFactor?.(clamped);
+}
+
 async function createWindow(): Promise<void> {
+  configureAppIdentity();
   const client = await PromisedNvimRpcClient.spawn({ clean: shouldLaunchCleanNvim() });
   const session = new EmbeddedNvimSession(client);
   const win = new BrowserWindow({
+    title: appDisplayName,
+    icon: appIcon(),
     width: 1200,
     height: 800,
     webPreferences: {
@@ -90,6 +165,7 @@ async function createWindow(): Promise<void> {
       webviewTag: true,
     },
   });
+  win.setTitle?.(appDisplayName);
   (win as unknown as { setMenu?: (menu: null) => void }).setMenu?.(null);
 
   win.webContents.on("console-message", (_event, _level, message) => {
@@ -99,6 +175,13 @@ async function createWindow(): Promise<void> {
     if (isFullscreenToggleInput(input)) {
       event.preventDefault();
       toggleFullscreen(win);
+      return;
+    }
+
+    const zoomAction = appZoomActionForInput(input);
+    if (zoomAction) {
+      event.preventDefault();
+      win.webContents.send("jusi:app-zoom", { action: zoomAction });
       return;
     }
 
@@ -181,6 +264,14 @@ async function createWindow(): Promise<void> {
         return;
       }
 
+      const zoomAction = appZoomActionForInput(input);
+      if (zoomAction) {
+        event.preventDefault();
+        applyWebviewZoom(contents, zoomAction);
+        win.webContents.send("jusi:web-zoomed");
+        return;
+      }
+
       if (isWebviewReloadInput(input)) {
         event.preventDefault();
         contents.reload?.();
@@ -217,6 +308,12 @@ async function createWindow(): Promise<void> {
           pendingWebviewNormalModeCommands.delete(contents);
         }, 1200);
         pendingWebviewNormalModeCommands.set(contents, timeout);
+        return;
+      }
+
+      if (input.control && key.toLowerCase() === "j") {
+        event.preventDefault();
+        win.webContents.send("jusi:web-open-active-link");
         return;
       }
 

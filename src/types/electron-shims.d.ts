@@ -1,14 +1,25 @@
 declare module "electron" {
   export const app: {
+    setName(name: string): void;
+    setAboutPanelOptions?(options: any): void;
+    dock?: {
+      setIcon(icon: string): void;
+    };
     whenReady(): Promise<void>;
     on(event: string, listener: (...args: any[]) => void): void;
     quit(): void;
+  };
+
+  export const Menu: {
+    buildFromTemplate(template: any[]): any;
+    setApplicationMenu(menu: any): void;
   };
 
   export class BrowserWindow {
     constructor(options?: any);
     loadFile(path: string): Promise<void>;
     on(event: string, listener: (...args: any[]) => void): void;
+    setTitle?(title: string): void;
     webContents: {
       send(channel: string, ...args: any[]): void;
       focus(): void;

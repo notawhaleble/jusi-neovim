@@ -222,7 +222,7 @@ export class NvimOverlayState {
           this.messages = {
             ...this.messages,
             entries: [],
-            historyVisible: false,
+            historyVisible: this.messages.historyVisible && !this.hasReturnPromptMessage(),
           };
           break;
         case "msg_showmode":
@@ -244,32 +244,8 @@ export class NvimOverlayState {
           };
           break;
         case "msg_history_show":
-          for (const payload of payloads) {
-            if (!Array.isArray(payload) || payload.length < 1) {
-              continue;
-            }
-            const historyEntries = Array.isArray(payload[0]) ? payload[0] : [];
-            const normalized: MessageEntry[] = [];
-            for (const entry of historyEntries) {
-              if (!Array.isArray(entry) || entry.length < 2) {
-                continue;
-              }
-              const nextEntry: MessageEntry = {
-                kind: String(entry[0] ?? ""),
-                text: flattenChunks(Array.isArray(entry[1]) ? entry[1] : []),
-                id: null,
-              };
-              const append = Boolean(entry[2] ?? false);
-              if (append && normalized.length > 0) {
-                const last = normalized[normalized.length - 1];
-                normalized[normalized.length - 1] = {
-                  ...last,
-                  text: `${last.text}${nextEntry.text}`,
-                };
-              } else {
-                normalized.push(nextEntry);
-              }
-            }
+          {
+            const normalized = this.normalizeHistoryEntries(this.extractHistoryEntries(payloads));
             this.messages = {
               ...this.messages,
               historyVisible: true,
@@ -311,8 +287,58 @@ export class NvimOverlayState {
     return null;
   }
 
+  private extractHistoryEntries(payload: unknown[]): unknown[] {
+    if (payload.every((entry) => this.isHistoryEntry(entry))) {
+      return payload;
+    }
+    if (Array.isArray(payload[0]) && payload[0].every((entry) => this.isHistoryEntry(entry))) {
+      return payload[0];
+    }
+    if (
+      Array.isArray(payload[0]) &&
+      Array.isArray(payload[0][0]) &&
+      payload[0][0].every((entry) => this.isHistoryEntry(entry))
+    ) {
+      return payload[0][0];
+    }
+    if (this.isHistoryEntry(payload)) {
+      return [payload];
+    }
+    return [];
+  }
+
+  private isHistoryEntry(value: unknown): boolean {
+    return Array.isArray(value) && typeof value[0] === "string" && Array.isArray(value[1]);
+  }
+
+  private normalizeHistoryEntries(historyEntries: unknown[]): MessageEntry[] {
+    const normalized: MessageEntry[] = [];
+    for (const entry of historyEntries) {
+      if (!Array.isArray(entry) || entry.length < 2) {
+        continue;
+      }
+      const nextEntry: MessageEntry = {
+        kind: String(entry[0] ?? ""),
+        text: flattenChunks(Array.isArray(entry[1]) ? entry[1] : []),
+        id: null,
+      };
+      const append = Boolean(entry[2] ?? false);
+      if (append && normalized.length > 0) {
+        const last = normalized[normalized.length - 1];
+        normalized[normalized.length - 1] = {
+          ...last,
+          text: `${last.text}${nextEntry.text}`,
+        };
+      } else {
+        normalized.push(nextEntry);
+      }
+    }
+    return normalized;
+  }
+
   private upsertMessage(entry: MessageEntry, replaceLast: boolean, append: boolean): void {
     const entries = [...this.messages.entries];
+    const historyVisible = this.messages.historyVisible && this.isReturnPromptMessage(entry);
 
     if (entry.id !== null) {
       const index = entries.findIndex((candidate) => candidate.id === entry.id);
@@ -326,7 +352,7 @@ export class NvimOverlayState {
         this.messages = {
           ...this.messages,
           entries,
-          historyVisible: false,
+          historyVisible,
         };
         return;
       }
@@ -347,7 +373,15 @@ export class NvimOverlayState {
     this.messages = {
       ...this.messages,
       entries: entries.slice(-6),
-      historyVisible: false,
+      historyVisible,
     };
+  }
+
+  private hasReturnPromptMessage(): boolean {
+    return this.messages.entries.some((entry) => this.isReturnPromptMessage(entry));
+  }
+
+  private isReturnPromptMessage(entry: MessageEntry): boolean {
+    return entry.kind === "return_prompt" || /press\s+(enter|return)/i.test(entry.text);
   }
 }

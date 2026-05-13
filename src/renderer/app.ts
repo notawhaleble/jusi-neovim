@@ -46,6 +46,14 @@ let pendingRenderState: RendererSessionState | null = null;
 let pendingRenderFrame: number | null = null;
 let pendingWindowCommandTimer: ReturnType<typeof setTimeout> | null = null;
 let pointerHidden = false;
+let terminalFontSize = 14;
+let requestGridResize: () => void = () => {};
+
+const minTerminalFontSize = 10;
+const maxTerminalFontSize = 26;
+const defaultTerminalFontSize = 14;
+const terminalLineHeightRatio = 18 / 14;
+const zoomStorageKey = "jusi-neovim:terminal-font-size";
 
 function parseHexColor(color: string): [number, number, number] | null {
   const match = /^#([0-9a-f]{6})$/i.exec(color);
@@ -110,6 +118,70 @@ function measureCellMetrics(): void {
   if (rect.height > 0) {
     cellHeight = rect.height;
   }
+}
+
+function clampTerminalFontSize(size: number): number {
+  return Math.max(minTerminalFontSize, Math.min(maxTerminalFontSize, size));
+}
+
+function loadTerminalFontSize(): number {
+  const stored = Number.parseFloat(window.localStorage.getItem(zoomStorageKey) ?? "");
+  return Number.isFinite(stored) ? clampTerminalFontSize(stored) : defaultTerminalFontSize;
+}
+
+function applyTerminalFontSize(size: number, persist: boolean): void {
+  terminalFontSize = clampTerminalFontSize(size);
+  const lineHeight = Math.round(terminalFontSize * terminalLineHeightRatio);
+  document.documentElement.style.setProperty("--terminal-font-size", `${terminalFontSize}px`);
+  document.documentElement.style.setProperty("--terminal-line-height", `${lineHeight}px`);
+  if (persist) {
+    window.localStorage.setItem(zoomStorageKey, String(terminalFontSize));
+  }
+  measureCellMetrics();
+}
+
+function handleAppZoom(event: { action: "in" | "out" | "reset" }): void {
+  const nextSize = event.action === "reset"
+    ? defaultTerminalFontSize
+    : terminalFontSize + (event.action === "in" ? 1 : -1);
+  applyTerminalFontSize(nextSize, true);
+  requestAnimationFrame(() => {
+    requestGridResize();
+    for (const host of persistentViews.values()) {
+      scheduleMirrorRefresh(host);
+      scheduleMirrorProjection(host, 120, true, true);
+    }
+    if (latestState) {
+      scheduleRenderState(latestState);
+    }
+  });
+}
+
+function handleWebZoomed(): void {
+  if (webModeBufferId === null) {
+    return;
+  }
+  const host = persistentViews.get(webModeBufferId);
+  const view = latestAttachedViews.get(webModeBufferId);
+  if (!host || !view) {
+    return;
+  }
+  scheduleMirrorRefresh(host);
+  scheduleMirrorProjection(host, 300, true, true);
+}
+
+function handleWebOpenActiveLink(): void {
+  if (webModeBufferId === null) {
+    return;
+  }
+  const view = latestAttachedViews.get(webModeBufferId);
+  if (!view) {
+    return;
+  }
+  void handleWebOpenLink({
+    bufferId: view.bufferId,
+    windowId: view.windowId,
+  });
 }
 
 function setText(selector: string, text: string): void {
@@ -305,17 +377,28 @@ function gridContentSignature(
   return grid.lines.join("\u001e");
 }
 
-function formatCmdline(state: RendererSessionState["cmdline"], maxColumns: number): string {
+interface CmdlineView {
+  text: string;
+  cursorColumn: number;
+}
+
+function formatCmdline(state: RendererSessionState["cmdline"], maxColumns: number): CmdlineView {
   const indent = state.indent > 0 ? " ".repeat(state.indent) : "";
   const base = `${indent}${state.prompt}${state.firstChar}${state.content}`;
   const prefixLength = indent.length + state.prompt.length + state.firstChar.length;
   const cursorIndex = Math.max(0, Math.min(base.length, prefixLength + state.position));
-  const scrollToCursor = (text: string): string => {
-    if (maxColumns <= 0 || text.length <= maxColumns) {
-      return text;
+  const scrollToCursor = (text: string): CmdlineView => {
+    if (maxColumns <= 0) {
+      return { text: "", cursorColumn: 0 };
     }
-    const start = Math.max(0, cursorIndex - maxColumns + 1);
-    return text.slice(start, start + maxColumns);
+    if (text.length <= maxColumns) {
+      return { text, cursorColumn: Math.max(0, Math.min(cursorIndex, maxColumns - 1)) };
+    }
+    const start = Math.max(0, Math.min(cursorIndex - maxColumns + 1, text.length - maxColumns));
+    return {
+      text: text.slice(start, start + maxColumns),
+      cursorColumn: Math.max(0, Math.min(cursorIndex - start, maxColumns - 1)),
+    };
   };
 
   if (!state.specialChar) {
@@ -333,9 +416,34 @@ function formatCmdline(state: RendererSessionState["cmdline"], maxColumns: numbe
 
 function getCommandAreaHeight(state: RendererSessionState): number {
   return commandAreaHeight({
-    cmdlineVisible: state.cmdline.visible,
-    blockLineCount: state.cmdline.blockLines.length,
+    cmdlineVisible: state.cmdline.visible || state.messages.entries.some((entry) => entry.text !== ""),
+    blockLineCount: visibleCmdlineBlockLines(state).length,
   }, { cellWidth, cellHeight });
+}
+
+function visibleCmdlineBlockLines(state: RendererSessionState): string[] {
+  const blockLines = commandBlockLines(state);
+  const maxRows = Math.max(0, state.screen.rows);
+  if (blockLines.length <= maxRows) {
+    return blockLines;
+  }
+  return blockLines.slice(blockLines.length - maxRows);
+}
+
+function commandBlockLines(state: RendererSessionState): string[] {
+  const lines = state.cmdline.blockLines.flatMap(splitCommandBlockLine);
+  if (state.messages.historyVisible) {
+    lines.push(...state.messages.history.flatMap((entry) => splitCommandBlockLine(entry.text)));
+  }
+  return lines;
+}
+
+function splitCommandBlockLine(line: string): string[] {
+  return line.split("\n");
+}
+
+function terminalGridHeight(state: RendererSessionState): number {
+  return Math.max(0, state.screen.rows * cellHeight);
 }
 
 function windowOrder(window: RendererSessionState["snapshot"]["windows"][number]): number {
@@ -393,9 +501,9 @@ function updateWebModeClasses(): void {
   }
 }
 
-async function applyWebModeFrame(host: HTMLDivElement, visible: boolean): Promise<void> {
+async function applyWebModeFrame(host: HTMLDivElement, visible: boolean, force = false): Promise<void> {
   const bufferId = Number(host.dataset.bufferId);
-  if (Number.isFinite(bufferId) && webModeFrameStates.get(bufferId) === visible) {
+  if (!force && Number.isFinite(bufferId) && webModeFrameStates.get(bufferId) === visible) {
     return;
   }
   const browser = host.querySelector("webview") as HTMLElement | null;
@@ -413,19 +521,40 @@ async function applyWebModeFrame(host: HTMLDivElement, visible: boolean): Promis
   }
 }
 
-function syncWebModeFrames(): void {
+async function applyWebPointerVisibility(host: HTMLDivElement): Promise<void> {
+  const browser = host.querySelector("webview") as HTMLElement | null;
+  const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
+  if (!browser || browser.dataset.domReady !== "1" || !executableBrowser || typeof executableBrowser.executeJavaScript !== "function") {
+    return;
+  }
+  try {
+    await executableBrowser.executeJavaScript(pointerVisibilitySource(pointerHidden && webModeBufferId === null));
+  } catch (_error) {
+    // The webview can be temporarily unavailable while Electron swaps pages.
+  }
+}
+
+function syncPointerVisibility(): void {
+  for (const host of persistentViews.values()) {
+    void applyWebPointerVisibility(host);
+  }
+}
+
+function syncWebModeFrames(force = false): void {
   for (const [bufferId, host] of persistentViews.entries()) {
-    void applyWebModeFrame(host, webModeBufferId === bufferId);
+    void applyWebModeFrame(host, webModeBufferId === bufferId, force);
   }
 }
 
 function setWebMode(bufferId: number | null): void {
+  const previousBufferId = webModeBufferId;
   webModeBufferId = bufferId;
   if (bufferId !== null) {
     showPointer();
   }
   updateWebModeClasses();
-  syncWebModeFrames();
+  syncWebModeFrames(previousBufferId !== bufferId);
+  syncPointerVisibility();
   if (bufferId === null) {
     focusHostSurface();
   }
@@ -437,6 +566,7 @@ function hidePointerForKeyboardInput(): void {
   }
   pointerHidden = true;
   document.body.classList.add("pointer-hidden");
+  syncPointerVisibility();
 }
 
 function showPointer(): void {
@@ -445,6 +575,7 @@ function showPointer(): void {
   }
   pointerHidden = false;
   document.body.classList.remove("pointer-hidden");
+  syncPointerVisibility();
 }
 
 function syncWebModeToState(state: RendererSessionState): void {
@@ -506,6 +637,7 @@ function ensureViewHost(view: AttachedWebView): HTMLDivElement {
     mirrorCursorSignatures.delete(view.bufferId);
     mirrorSelectionSignatures.delete(view.bufferId);
     void applyWebModeFrame(host, webModeBufferId === view.bufferId);
+    void applyWebPointerVisibility(host);
     scheduleMirrorRefresh(host);
   });
   browser.addEventListener("did-finish-load", () => {
@@ -519,13 +651,20 @@ function ensureViewHost(view: AttachedWebView): HTMLDivElement {
     void moveMirrorCursorToClick(host, event as MouseEvent);
   });
   browser.addEventListener("wheel", () => {
+    showPointer();
     scheduleMirrorProjection(host, 80, false, true);
   });
+  browser.addEventListener("mousemove", showPointer);
+  browser.addEventListener("pointerdown", showPointer);
   host.appendChild(browser);
 
   const mirrorCursor = document.createElement("div");
   mirrorCursor.className = "web-view-box__mirror-cursor";
   host.appendChild(mirrorCursor);
+
+  const modeFrame = document.createElement("div");
+  modeFrame.className = "web-view-box__mode-frame";
+  host.appendChild(modeFrame);
 
   persistentViews.set(view.bufferId, host);
   return host;
@@ -884,22 +1023,29 @@ function mirrorSelectionClearSource(): string {
 
 function webModeFrameSource(visible: boolean): string {
   return `(() => {
-    let frame = document.getElementById("jusi-neovim-web-mode-frame");
-    if (!frame) {
-      frame = document.createElement("div");
-      frame.id = "jusi-neovim-web-mode-frame";
-      frame.style.position = "fixed";
-      frame.style.inset = "0";
-      frame.style.boxSizing = "border-box";
-      frame.style.pointerEvents = "none";
-      frame.style.zIndex = "2147483647";
-      frame.style.border = "2px solid #ff9f45";
-      frame.style.outline = "2px solid rgba(255, 255, 255, 0.88)";
-      frame.style.outlineOffset = "-4px";
-      frame.style.boxShadow = "inset 0 0 0 1px rgba(255, 159, 69, 0.55), 0 0 14px rgba(255, 159, 69, 0.35)";
-      (document.body || document.documentElement).appendChild(frame);
+    const frame = document.getElementById("jusi-neovim-web-mode-frame");
+    if (frame) {
+      frame.remove();
     }
-    frame.style.display = ${visible ? '"block"' : '"none"'};
+  })()`;
+}
+
+function pointerVisibilitySource(hidden: boolean): string {
+  return `(() => {
+    const id = "jusi-neovim-pointer-visibility";
+    let style = document.getElementById(id);
+    if (${hidden ? "true" : "false"}) {
+      if (!style) {
+        style = document.createElement("style");
+        style.id = id;
+        (document.head || document.documentElement).appendChild(style);
+      }
+      style.textContent = "html, body, * { cursor: none !important; }";
+      return;
+    }
+    if (style) {
+      style.remove();
+    }
   })()`;
 }
 
@@ -1437,9 +1583,38 @@ function mirrorLinkTargetSource(index: number): string {
       return null;
     }
     return {
+      href: typeof link.href === "string" ? link.href : null,
       x: Math.max(0, Math.floor(visibleRect.left + Math.min(visibleRect.width / 2, Math.max(1, visibleRect.width - 1)))),
       y: Math.max(0, Math.floor(visibleRect.top + Math.min(visibleRect.height / 2, Math.max(1, visibleRect.height - 1)))),
     };
+  })()`;
+}
+
+function mirrorActivateLinkSource(index: number): string {
+  return `(() => {
+    const indexMap = window.__jusiMirrorIndexMap || [];
+    const requestedIndex = Math.max(0, Math.floor(${index}));
+    const nearestMappedIndex = (start, direction) => {
+      let cursor = Math.max(0, Math.min(start, indexMap.length - 1));
+      while (cursor >= 0 && cursor < indexMap.length) {
+        if (indexMap[cursor]) {
+          return cursor;
+        }
+        cursor += direction;
+      }
+      return null;
+    };
+    const targetIndex = indexMap[requestedIndex] ? requestedIndex : nearestMappedIndex(requestedIndex, -1) ?? nearestMappedIndex(requestedIndex, 1);
+    if (targetIndex === null || !indexMap[targetIndex] || !indexMap[targetIndex].node) {
+      return false;
+    }
+    const element = indexMap[targetIndex].node.parentElement;
+    const link = element && element.closest ? element.closest("a[href], area[href]") : null;
+    if (!link) {
+      return false;
+    }
+    link.click();
+    return true;
   })()`;
 }
 
@@ -1628,15 +1803,19 @@ async function handleWebOpenLink(event: { bufferId: number; windowId: number }):
   }
   const index = line.startIndex + Math.max(0, Math.min(view.cursor.col, line.text.length));
   try {
-    const target = await executableBrowser.executeJavaScript(mirrorLinkTargetSource(index)) as { x: number; y: number } | null;
-    const inputBrowser = browser as HTMLElement & {
-      sendInputEvent?: (event: { type: string; x: number; y: number; button?: string; clickCount?: number }) => void;
+    const target = await executableBrowser.executeJavaScript(mirrorLinkTargetSource(index)) as { href?: string | null } | null;
+    const navigationBrowser = browser as HTMLElement & {
+      loadURL?: (url: string) => void;
     };
-    if (!target || !Number.isFinite(target.x) || !Number.isFinite(target.y) || typeof inputBrowser.sendInputEvent !== "function") {
+    if (!target) {
       return;
     }
-    inputBrowser.sendInputEvent({ type: "mouseDown", x: target.x, y: target.y, button: "left", clickCount: 1 });
-    inputBrowser.sendInputEvent({ type: "mouseUp", x: target.x, y: target.y, button: "left", clickCount: 1 });
+    const href = typeof target.href === "string" ? target.href : "";
+    if (href !== "" && !href.toLowerCase().startsWith("javascript:") && typeof navigationBrowser.loadURL === "function") {
+      navigationBrowser.loadURL(href);
+      return;
+    }
+    await executableBrowser.executeJavaScript(mirrorActivateLinkSource(index));
   } catch (_error) {
     return;
   }
@@ -1880,7 +2059,7 @@ function renderAttachedViews(views: AttachedWebView[]): void {
     const host = ensureViewHost(view);
     host.classList.toggle("web-view-box--active", view.windowId === activeWindowId);
     host.classList.toggle("web-view-box--web-mode", webModeBufferId === view.bufferId);
-    void applyWebModeFrame(host, webModeBufferId === view.bufferId);
+    void applyWebModeFrame(host, webModeBufferId === view.bufferId, webModeBufferId === null);
     host.style.zIndex = String(100 + ((view.gridBounds?.zIndex ?? 0) * 1000) + (view.gridBounds?.compIndex ?? 0));
     updateViewHost(host, view);
     placeViewHost(host, view);
@@ -2090,10 +2269,13 @@ function renderWindowFrames(state: RendererSessionState): void {
 }
 
 function renderMessageLayers(state: RendererSessionState): void {
-  const commandHeight = getCommandAreaHeight(state);
+  const commandTop = terminalGridHeight(state);
   const messageLayer = document.getElementById("message-layer");
   if (messageLayer) {
-    (messageLayer as HTMLElement).style.bottom = `${commandHeight}px`;
+    (messageLayer as HTMLElement).style.bottom = "auto";
+    (messageLayer as HTMLElement).style.top = `${commandTop}px`;
+    (messageLayer as HTMLElement).style.height = `${cellHeight}px`;
+    (messageLayer as HTMLElement).style.overflow = "hidden";
     messageLayer.innerHTML = "";
     const visibleEntries = state.messages.entries.filter((entry) => entry.text !== "");
     if (visibleEntries.length > 0) {
@@ -2118,17 +2300,7 @@ function renderMessageLayers(state: RendererSessionState): void {
   const historyLayer = document.getElementById("message-history-layer");
   if (historyLayer) {
     historyLayer.innerHTML = "";
-    if (state.messages.historyVisible && state.messages.history.length > 0) {
-      historyLayer.classList.add("message-history-layer--visible");
-      state.messages.history.forEach((entry) => {
-        const row = document.createElement("div");
-        row.className = `message-history-entry message-entry--${entry.kind || "plain"}`;
-        row.textContent = entry.text;
-        historyLayer.appendChild(row);
-      });
-    } else {
-      historyLayer.classList.remove("message-history-layer--visible");
-    }
+    historyLayer.classList.remove("message-history-layer--visible");
   }
 }
 
@@ -2138,8 +2310,15 @@ function renderCmdlineBlock(state: RendererSessionState): void {
     return;
   }
 
+  const blockElement = block as HTMLElement;
+  const lines = visibleCmdlineBlockLines(state);
+  const blockHeight = lines.length * cellHeight;
+  blockElement.style.top = `${Math.max(0, terminalGridHeight(state) - blockHeight)}px`;
+  blockElement.style.bottom = "auto";
+  blockElement.style.height = `${blockHeight}px`;
+  blockElement.style.maxHeight = `${Math.max(0, state.screen.rows * cellHeight)}px`;
+  blockElement.style.overflow = "hidden";
   block.innerHTML = "";
-  const lines = state.cmdline.blockLines;
   if (lines.length === 0) {
     block.classList.remove("cmdline-block-layer--visible");
     return;
@@ -2148,10 +2327,23 @@ function renderCmdlineBlock(state: RendererSessionState): void {
   lines.forEach((line) => {
     const row = document.createElement("div");
     row.className = "cmdline-block-line";
+    row.style.height = `${cellHeight}px`;
+    row.style.lineHeight = `${cellHeight}px`;
     row.textContent = line;
     block.appendChild(row);
   });
   block.classList.add("cmdline-block-layer--visible");
+}
+
+function layoutTerminalSurfaces(state: RendererSessionState): void {
+  const gridHeight = terminalGridHeight(state);
+  for (const id of ["terminal-screen", "grid-layer-root", "window-frame-layer", "web-view-layer"]) {
+    const element = document.getElementById(id);
+    if (element instanceof HTMLElement) {
+      element.style.bottom = "auto";
+      element.style.height = `${gridHeight}px`;
+    }
+  }
 }
 
 function renderState(state: RendererSessionState): void {
@@ -2166,6 +2358,7 @@ function renderState(state: RendererSessionState): void {
   const foreground = resolveDefaultForeground(background, state.screen.foregroundColor);
   document.documentElement.style.setProperty("--bg", background);
   document.documentElement.style.setProperty("--text", foreground);
+  layoutTerminalSurfaces(state);
 
   const screen = document.getElementById("terminal-screen");
   if (screen) {
@@ -2222,10 +2415,25 @@ function renderState(state: RendererSessionState): void {
 
   const cmdline = document.getElementById("cmdline-layer");
   if (cmdline) {
+    const cmdlineElement = cmdline as HTMLElement;
+    cmdlineElement.style.top = `${terminalGridHeight(state)}px`;
+    cmdlineElement.style.bottom = "auto";
+    cmdlineElement.style.height = `${cellHeight}px`;
+    cmdlineElement.style.minHeight = `${cellHeight}px`;
+    cmdlineElement.style.lineHeight = `${cellHeight}px`;
+    cmdlineElement.style.fontSize = `${terminalFontSize}px`;
     if (state.cmdline.visible) {
       const stage = document.querySelector(".stage");
       const maxColumns = stage instanceof HTMLElement ? Math.floor(stage.clientWidth / cellWidth) : state.screen.cols;
-      cmdline.textContent = formatCmdline(state.cmdline, maxColumns);
+      const view = formatCmdline(state.cmdline, maxColumns);
+      cmdline.textContent = view.text;
+      const commandCursor = document.createElement("span");
+      commandCursor.className = "cmdline-cursor";
+      commandCursor.style.left = `${view.cursorColumn * cellWidth}px`;
+      commandCursor.style.width = `${cellWidth}px`;
+      commandCursor.style.height = `${cellHeight}px`;
+      commandCursor.style.backgroundColor = foreground;
+      cmdline.appendChild(commandCursor);
       cmdline.classList.add("cmdline-layer--visible");
     } else {
       cmdline.textContent = "";
@@ -2475,7 +2683,7 @@ function installResizeSync(): void {
     const rect = stage.getBoundingClientRect();
     measureCellMetrics();
     const columns = Math.max(20, Math.floor(rect.width / cellWidth));
-    const lines = Math.max(8, Math.floor(rect.height / cellHeight));
+    const lines = Math.max(8, Math.floor(rect.height / cellHeight) - 1);
     if (columns === lastColumns && lines === lastLines) {
       return;
     }
@@ -2487,6 +2695,7 @@ function installResizeSync(): void {
   const observer = new ResizeObserver(() => {
     sync();
   });
+  requestGridResize = sync;
   observer.observe(stage);
   sync();
 }
@@ -2498,6 +2707,7 @@ function installPointerVisibility(): void {
 }
 
 async function boot(): Promise<void> {
+  applyTerminalFontSize(loadTerminalFontSize(), false);
   const initial = await window.jusi.getInitialState();
   renderState(initial);
   window.jusi.onStateChanged((state) => {
@@ -2514,6 +2724,15 @@ async function boot(): Promise<void> {
   });
   window.jusi.onLeaveWebMode(() => {
     setWebMode(null);
+  });
+  window.jusi.onAppZoom((event) => {
+    handleAppZoom(event);
+  });
+  window.jusi.onWebZoomed(() => {
+    handleWebZoomed();
+  });
+  window.jusi.onWebOpenActiveLink(() => {
+    handleWebOpenActiveLink();
   });
   installResizeSync();
   installPointerRouting();

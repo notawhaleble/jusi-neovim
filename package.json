@@ -1,11 +1,12 @@
 {
   "name": "jusi-neovim",
+  "productName": "Jusi Neovim",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "electron": "npm run build && electron dist/electron/main.js",
+    "electron": "npm run build && node scripts/run-electron.mjs",
     "smoke:live": "npm run build && node dist/smoke/live-session.js",
     "test": "npm run build && node src/test/run-tests.mjs"
   },

@@ -27,6 +27,9 @@ export interface RendererApi {
   onWebOpenLink(listener: (event: { bufferId: number; windowId: number }) => void): void;
   onWebEnterMode(listener: (event: { bufferId: number; windowId: number }) => void): void;
   onLeaveWebMode(listener: () => void): void;
+  onAppZoom(listener: (event: { action: "in" | "out" | "reset" }) => void): void;
+  onWebZoomed(listener: () => void): void;
+  onWebOpenActiveLink(listener: () => void): void;
   sendInput(keys: string): Promise<void>;
   resize(columns: number, lines: number): Promise<void>;
   runCommand(command: string): Promise<void>;

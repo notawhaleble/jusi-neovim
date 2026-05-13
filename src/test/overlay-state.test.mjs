@@ -75,6 +75,38 @@ function testTracksMessagesAndHistoryAppend() {
 
   overlays.handleRedraw([
     ["msg_clear"],
+  ]);
+
+  assert.deepEqual(overlays.getMessages(), {
+    entries: [],
+    showmode: "-- INSERT --",
+    showcmd: "3/9",
+    ruler: "12,4",
+    history: [
+      { kind: "echomsg", text: "part 1 + part 2", id: null },
+      { kind: "echoerr", text: "boom", id: null },
+    ],
+    historyVisible: true,
+  });
+
+  overlays.handleRedraw([
+    ["msg_show", ["return_prompt", [[0, "Press ENTER or type command to continue", 0]], false, true, false, "prompt", ""]],
+  ]);
+
+  assert.deepEqual(overlays.getMessages(), {
+    entries: [{ kind: "return_prompt", text: "Press ENTER or type command to continue", id: "prompt" }],
+    showmode: "-- INSERT --",
+    showcmd: "3/9",
+    ruler: "12,4",
+    history: [
+      { kind: "echomsg", text: "part 1 + part 2", id: null },
+      { kind: "echoerr", text: "boom", id: null },
+    ],
+    historyVisible: true,
+  });
+
+  overlays.handleRedraw([
+    ["msg_clear"],
     ["msg_showmode", [[]]],
     ["msg_showcmd", [[]]],
     ["msg_ruler", [[]]],
@@ -93,7 +125,31 @@ function testTracksMessagesAndHistoryAppend() {
   });
 }
 
+function testTracksDirectMessagesHistoryPayload() {
+  const overlays = new NvimOverlayState();
+
+  overlays.handleRedraw([
+    ["msg_history_show",
+      ["echomsg", [[0, "lalala", 0]], false],
+      ["echomsg", [[0, "ololo", 0]], false],
+    ],
+  ]);
+
+  assert.deepEqual(overlays.getMessages(), {
+    entries: [],
+    showmode: "",
+    showcmd: "",
+    ruler: "",
+    history: [
+      { kind: "echomsg", text: "lalala", id: null },
+      { kind: "echomsg", text: "ololo", id: null },
+    ],
+    historyVisible: true,
+  });
+}
+
 testTracksCmdlineShapeAndBlock();
 testTracksMessagesAndHistoryAppend();
+testTracksDirectMessagesHistoryPayload();
 
 console.log("overlay-state tests passed");
