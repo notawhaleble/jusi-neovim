@@ -2,6 +2,8 @@ node_modules/
 dist/
 release/*
 .local/
+assets/linux/
+build/icons/
 
 .nvimlog
 *.log

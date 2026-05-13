@@ -116,6 +116,33 @@ function testDefaultColorsUseLastPayloadInBatch() {
   assert.equal(state.backgroundColor, "#ffdab9");
 }
 
+function testModeCursorStyleTracksModeChange() {
+  const screen = new NvimScreenState();
+  screen.handleRedraw([
+    ["mode_info_set", [true, [
+      { name: "normal", short_name: "n", cursor_shape: "block", cell_percentage: 100 },
+      { name: "insert", short_name: "i", cursor_shape: "vertical", cell_percentage: 25, attr_id: 7 },
+    ]]],
+    ["mode_change", ["insert", 1]],
+  ]);
+
+  assert.deepEqual(screen.getState().mode, {
+    name: "insert",
+    index: 1,
+    cursor: {
+      shape: "vertical",
+      cellPercentage: 25,
+      attrId: 7,
+      attrIdLm: undefined,
+      blinkWait: undefined,
+      blinkOn: undefined,
+      blinkOff: undefined,
+      name: "insert",
+      shortName: "i",
+    },
+  });
+}
+
 function testGridScrollPreservesHighlightIds() {
   const screen = new NvimScreenState();
   screen.handleRedraw([
@@ -142,6 +169,7 @@ testGridLineWritesTextAfterLeadingSpace();
 testGridLineStoresHighlightIds();
 testGridLineIgnoresZeroRepeatCells();
 testDefaultColorsUseLastPayloadInBatch();
+testModeCursorStyleTracksModeChange();
 testGridScrollPreservesHighlightIds();
 
 console.log("screen-state tests passed");

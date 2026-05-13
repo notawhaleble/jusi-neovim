@@ -72,6 +72,10 @@ export class NvimLayoutController {
     return this.uiState.getSnapshot();
   }
 
+  getVisibleSnapshot(): UiSnapshot {
+    return this.visibleSnapshot(this.uiState.getSnapshot());
+  }
+
   getAttachedWebViews(): AttachedWebView[] {
     const snapshot = this.uiState.getSnapshot();
     const windowsById = new Map<number, WindowRef>();
@@ -207,5 +211,22 @@ export class NvimLayoutController {
         gridBounds: match,
       });
     }
+  }
+
+  private visibleSnapshot(snapshot: UiSnapshot): UiSnapshot {
+    if (snapshot.currentTabId === null) {
+      return snapshot;
+    }
+
+    const tabs = snapshot.tabs.filter((tab) => tab.id === snapshot.currentTabId);
+    const windows = snapshot.windows.filter((window) => window.tabId === snapshot.currentTabId);
+    const bufferIds = new Set(windows.map((window) => window.bufferId));
+    const buffers = snapshot.buffers.filter((buffer) => bufferIds.has(buffer.id));
+    return {
+      currentTabId: snapshot.currentTabId,
+      tabs,
+      windows,
+      buffers,
+    };
   }
 }

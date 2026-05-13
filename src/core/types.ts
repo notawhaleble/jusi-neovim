@@ -114,6 +114,26 @@ export interface CursorPosition {
   col: number;
 }
 
+export type CursorShape = "block" | "vertical" | "horizontal";
+
+export interface CursorStyle {
+  shape: CursorShape;
+  cellPercentage: number;
+  attrId?: number;
+  attrIdLm?: number;
+  blinkWait?: number;
+  blinkOn?: number;
+  blinkOff?: number;
+  name?: string;
+  shortName?: string;
+}
+
+export interface ModeState {
+  name: string;
+  index: number;
+  cursor: CursorStyle;
+}
+
 export interface PrimaryScreenState {
   rows: number;
   cols: number;
@@ -121,6 +141,7 @@ export interface PrimaryScreenState {
   cells?: ScreenCell[][];
   runs: ScreenLineRun[][];
   cursor: CursorPosition | null;
+  mode: ModeState;
   backgroundColor?: string;
   foregroundColor?: string;
   highlights: Record<number, HighlightAttrs>;

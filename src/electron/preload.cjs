@@ -47,6 +47,9 @@ contextBridge.exposeInMainWorld("jusi", {
   async sendInput(keys) {
     await ipcRenderer.invoke("jusi:input", keys);
   },
+  async sendWindowInput(keys) {
+    await ipcRenderer.invoke("jusi:window-input", keys);
+  },
   async resize(columns, lines) {
     await ipcRenderer.invoke("jusi:resize", columns, lines);
   },

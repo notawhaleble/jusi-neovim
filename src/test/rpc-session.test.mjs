@@ -5,9 +5,14 @@ import { EmbeddedNvimSession } from "../../dist/bridge/rpc-session.js";
 class FakeClient {
   requests = [];
   listener = null;
+  exitListener = null;
 
   onNotification(listener) {
     this.listener = listener;
+  }
+
+  onExit(listener) {
+    this.exitListener = listener;
   }
 
   async request(method, args = []) {
@@ -37,6 +42,19 @@ async function testCommandsStillRefreshLayoutSnapshot() {
     "nvim_command",
     "nvim_exec_lua",
   ]);
+}
+
+async function testWindowInputRefreshesVisibleLayoutSnapshot() {
+  const client = new FakeClient();
+  const session = new EmbeddedNvimSession(client);
+
+  await session.windowInput("<C-W>H");
+  await new Promise((resolve) => setTimeout(resolve, 90));
+  await session.dispose();
+
+  assert.equal(client.requests[0].method, "nvim_input");
+  assert.equal(client.requests[0].args[0], "<C-W>H");
+  assert.ok(client.requests.slice(1).some((request) => request.method === "nvim_exec_lua"));
 }
 
 async function testUpdateWebMirrorWritesBufferAndEmitsState() {
@@ -135,13 +153,29 @@ async function testSetRegisterUsesNvimFunction() {
   });
 }
 
+async function testExitNotificationIsForwarded() {
+  const client = new FakeClient();
+  const session = new EmbeddedNvimSession(client);
+  let exited = false;
+  session.onExit(() => {
+    exited = true;
+  });
+
+  session.start();
+  client.exitListener();
+
+  assert.equal(exited, true);
+}
+
 await testInputDoesNotRefreshLayoutSnapshot();
 await testCommandsStillRefreshLayoutSnapshot();
+await testWindowInputRefreshesVisibleLayoutSnapshot();
 await testUpdateWebMirrorWritesBufferAndEmitsState();
 await testWebScrollNotificationIsForwarded();
 await testWebOpenLinkNotificationIsForwarded();
 await testWebEnterModeNotificationIsForwarded();
 await testSetCursorUsesLuaBridge();
 await testSetRegisterUsesNvimFunction();
+await testExitNotificationIsForwarded();
 
 console.log("rpc-session tests passed");

@@ -5,6 +5,7 @@ vim.g.loaded_jusi_neovim = 1
 
 local M = {}
 local snapshot_scheduled = false
+local visible_snapshot_scheduled = false
 
 local function notify(method, payload)
   pcall(vim.rpcnotify, 0, method, payload)
@@ -168,6 +169,18 @@ local function notify_current_tab()
   })
 end
 
+local function notify_visible_windows()
+  local tabnr = vim.api.nvim_get_current_tabpage()
+  notify_current_tab()
+  notify_tab(tabnr)
+
+  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(tabnr)) do
+    local bufnr = vim.api.nvim_win_get_buf(winid)
+    notify_buffer(bufnr)
+    notify_window(winid)
+  end
+end
+
 function M.notify_full_snapshot()
   notify_current_tab()
 
@@ -192,6 +205,17 @@ local function schedule_full_snapshot()
   vim.schedule(function()
     snapshot_scheduled = false
     M.notify_full_snapshot()
+  end)
+end
+
+local function schedule_visible_snapshot()
+  if visible_snapshot_scheduled then
+    return
+  end
+  visible_snapshot_scheduled = true
+  vim.schedule(function()
+    visible_snapshot_scheduled = false
+    notify_visible_windows()
   end)
 end
 
@@ -298,10 +322,17 @@ end, {})
 
 local group = vim.api.nvim_create_augroup("jusi_neovim_runtime", { clear = true })
 
-vim.api.nvim_create_autocmd({ "VimEnter", "TabEnter" }, {
+vim.api.nvim_create_autocmd({ "VimEnter" }, {
   group = group,
   callback = function()
     schedule_full_snapshot()
+  end,
+})
+
+vim.api.nvim_create_autocmd({ "TabEnter" }, {
+  group = group,
+  callback = function()
+    schedule_visible_snapshot()
   end,
 })
 
@@ -312,7 +343,9 @@ vim.api.nvim_create_autocmd({ "BufEnter", "BufFilePost", "BufAdd" }, {
       M.apply_web_buffer_maps(args.buf)
     end
     notify_buffer(args.buf)
-    schedule_full_snapshot()
+    if vim.api.nvim_get_current_buf() == args.buf then
+      schedule_visible_snapshot()
+    end
   end,
 })
 
@@ -329,7 +362,7 @@ vim.api.nvim_create_autocmd({ "BufDelete" }, {
 vim.api.nvim_create_autocmd({ "WinEnter", "WinNew" }, {
   group = group,
   callback = function()
-    schedule_full_snapshot()
+    schedule_visible_snapshot()
   end,
 })
 
@@ -358,7 +391,7 @@ vim.api.nvim_create_autocmd({ "ModeChanged" }, {
 vim.api.nvim_create_autocmd({ "WinLeave", "VimResized", "WinResized" }, {
   group = group,
   callback = function()
-    schedule_full_snapshot()
+    schedule_visible_snapshot()
   end,
 })
 
@@ -373,7 +406,7 @@ vim.api.nvim_create_autocmd({ "WinClosed" }, {
       type = "window-close",
       windowId = winid,
     })
-    schedule_full_snapshot()
+    schedule_visible_snapshot()
   end,
 })
 
@@ -388,7 +421,7 @@ vim.api.nvim_create_autocmd({ "TabClosed" }, {
       type = "tab-close",
       tabId = tabnr,
     })
-    schedule_full_snapshot()
+    schedule_visible_snapshot()
   end,
 })
 
@@ -398,6 +431,10 @@ end)
 
 _G.jusi_neovim_notify_full_snapshot = function()
   M.notify_full_snapshot()
+end
+
+_G.jusi_neovim_notify_visible_snapshot = function()
+  notify_visible_windows()
 end
 
 return M

@@ -9,8 +9,9 @@
     "build": "tsc -p tsconfig.json",
     "electron": "npm run build && node scripts/run-electron.mjs",
     "dist:mac": "npm run build && electron-builder --mac dmg zip --publish never",
-    "dist:linux": "npm run build && electron-builder --linux AppImage --publish never",
-    "dist:linux:x64": "npm run build && electron-builder --linux AppImage --x64 --publish never",
+    "prepare:linux-icons": "node scripts/prepare-linux-icons.mjs",
+    "dist:linux": "npm run build && npm run prepare:linux-icons && electron-builder --linux AppImage --publish never",
+    "dist:linux:x64": "npm run build && npm run prepare:linux-icons && electron-builder --linux AppImage --x64 --publish never",
     "smoke:live": "npm run build && node dist/smoke/live-session.js",
     "test": "npm run build && node src/test/run-tests.mjs"
   },
@@ -19,6 +20,7 @@
     "productName": "Jusi Neovim",
     "asar": false,
     "directories": {
+      "buildResources": "build",
       "output": "release"
     },
     "files": [
@@ -44,7 +46,14 @@
         "AppImage"
       ],
       "category": "Development",
-      "icon": "assets/jusi-neovim-logo.png"
+      "executableName": "jusi-neovim",
+      "icon": "icons",
+      "desktop": {
+        "entry": {
+          "Icon": "jusi-neovim",
+          "StartupWMClass": "jusi-neovim"
+        }
+      }
     }
   },
   "dependencies": {

@@ -1,4 +1,4 @@
-import { GridScreenState, HighlightAttrs, PrimaryScreenState, ScreenCell, ScreenLineRun } from "../core/types.js";
+import { CursorShape, CursorStyle, GridScreenState, HighlightAttrs, PrimaryScreenState, ScreenCell, ScreenLineRun } from "../core/types.js";
 
 function colorNumberToCss(value: number | null | undefined): string | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
@@ -11,6 +11,9 @@ export class NvimScreenState {
   private readonly grid = new Map<number, { rows: number; cols: number; cells: ScreenCell[][] }>();
   private readonly highlights = new Map<number, HighlightAttrs>();
   private cursor: PrimaryScreenState["cursor"] = null;
+  private currentModeName = "normal";
+  private currentModeIndex = 0;
+  private modeStyles: CursorStyle[] = [];
   private foregroundColor: string | undefined;
   private backgroundColor: string | undefined;
 
@@ -88,6 +91,24 @@ export class NvimScreenState {
             };
           }
           break;
+        case "mode_info_set":
+          for (const payload of payloads) {
+            if (!Array.isArray(payload) || payload.length < 2 || !Array.isArray(payload[1])) {
+              continue;
+            }
+            this.modeStyles = payload[1].map((entry) => this.decodeCursorStyle(entry));
+          }
+          break;
+        case "mode_change":
+          for (const payload of payloads) {
+            if (!Array.isArray(payload) || payload.length < 2) {
+              continue;
+            }
+            this.currentModeName = String(payload[0] ?? "normal");
+            const modeIndex = this.asNumber(payload[1]);
+            this.currentModeIndex = Number.isFinite(modeIndex) ? modeIndex : 0;
+          }
+          break;
         case "default_colors_set":
           for (const payload of payloads) {
             if (Array.isArray(payload) && payload.length >= 2) {
@@ -111,6 +132,7 @@ export class NvimScreenState {
       lines: primary.map((line) => this.cellsToLine(line, primaryGrid?.cols ?? 0)),
       runs: primary.map((line) => this.cellsToRuns(line, primaryGrid?.cols ?? 0)),
       cursor: this.cursor?.gridId === 1 ? this.cursor : null,
+      mode: this.modeState(),
       backgroundColor: this.backgroundColor,
       foregroundColor: this.foregroundColor,
       highlights: Object.fromEntries(this.highlights.entries()),
@@ -272,6 +294,59 @@ export class NvimScreenState {
       undercurl: value.undercurl === true ? true : undefined,
       reverse: value.reverse === true ? true : undefined,
     };
+  }
+
+  private modeState(): PrimaryScreenState["mode"] {
+    return {
+      name: this.currentModeName,
+      index: this.currentModeIndex,
+      cursor: this.modeStyles[this.currentModeIndex] ?? this.defaultCursorStyle(),
+    };
+  }
+
+  private defaultCursorStyle(): CursorStyle {
+    return {
+      shape: "block",
+      cellPercentage: 100,
+      name: "normal",
+      shortName: "n",
+    };
+  }
+
+  private decodeCursorStyle(value: unknown): CursorStyle {
+    if (!this.isObject(value)) {
+      return this.defaultCursorStyle();
+    }
+    return {
+      shape: this.asCursorShape(value.cursor_shape),
+      cellPercentage: this.asPercentage(value.cell_percentage),
+      attrId: this.optionalNumber(value.attr_id),
+      attrIdLm: this.optionalNumber(value.attr_id_lm),
+      blinkWait: this.optionalNumber(value.blinkwait),
+      blinkOn: this.optionalNumber(value.blinkon),
+      blinkOff: this.optionalNumber(value.blinkoff),
+      name: typeof value.name === "string" ? value.name : undefined,
+      shortName: typeof value.short_name === "string" ? value.short_name : undefined,
+    };
+  }
+
+  private asCursorShape(value: unknown): CursorShape {
+    if (value === "vertical" || value === "horizontal") {
+      return value;
+    }
+    return "block";
+  }
+
+  private asPercentage(value: unknown): number {
+    const percentage = this.asNumber(value);
+    if (!Number.isFinite(percentage) || percentage <= 0) {
+      return 100;
+    }
+    return Math.max(1, Math.min(100, percentage));
+  }
+
+  private optionalNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
   }
 
   private cellsToLine(cells: ScreenCell[], cols: number): string {

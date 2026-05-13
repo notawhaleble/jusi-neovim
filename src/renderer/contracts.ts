@@ -31,6 +31,7 @@ export interface RendererApi {
   onWebZoomed(listener: () => void): void;
   onWebOpenActiveLink(listener: () => void): void;
   sendInput(keys: string): Promise<void>;
+  sendWindowInput(keys: string): Promise<void>;
   resize(columns: number, lines: number): Promise<void>;
   runCommand(command: string): Promise<void>;
   focusWindow(windowId: number): Promise<void>;

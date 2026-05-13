@@ -5,6 +5,7 @@ declare module "electron" {
     dock?: {
       setIcon(icon: string): void;
     };
+    setDesktopName?(name: string): void;
     whenReady(): Promise<void>;
     on(event: string, listener: (...args: any[]) => void): void;
     quit(): void;
@@ -20,6 +21,7 @@ declare module "electron" {
     loadFile(path: string): Promise<void>;
     on(event: string, listener: (...args: any[]) => void): void;
     setTitle?(title: string): void;
+    setIcon?(icon: any): void;
     webContents: {
       send(channel: string, ...args: any[]): void;
       focus(): void;
@@ -42,5 +44,11 @@ declare module "electron" {
 
   export const contextBridge: {
     exposeInMainWorld(key: string, api: any): void;
+  };
+
+  export const nativeImage: {
+    createFromPath(path: string): {
+      isEmpty(): boolean;
+    };
   };
 }

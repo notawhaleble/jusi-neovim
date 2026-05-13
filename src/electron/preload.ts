@@ -49,6 +49,9 @@ const api: RendererApi = {
   async sendInput(keys: string): Promise<void> {
     await ipcRenderer.invoke("jusi:input", keys);
   },
+  async sendWindowInput(keys: string): Promise<void> {
+    await ipcRenderer.invoke("jusi:window-input", keys);
+  },
   async resize(columns: number, lines: number): Promise<void> {
     await ipcRenderer.invoke("jusi:resize", columns, lines);
   },

@@ -1,5 +1,6 @@
 import {
   AttachedWebView,
+  CursorStyle,
   GridScreenState,
   HighlightAttrs,
   MirrorDocument,
@@ -108,6 +109,46 @@ function resolveDefaultForeground(background: string, foreground: string | undef
     return readableTextColor(background);
   }
   return candidate;
+}
+
+function cursorColorForStyle(
+  style: CursorStyle,
+  highlights: Record<number, HighlightAttrs>,
+  defaults: { foreground: string; background: string },
+): string {
+  const attrs = style.attrId === undefined ? undefined : highlights[style.attrId];
+  if (!attrs) {
+    return defaults.foreground;
+  }
+  if (attrs.reverse) {
+    return attrs.foreground ?? defaults.foreground;
+  }
+  return attrs.background ?? attrs.foreground ?? defaults.foreground;
+}
+
+function applyCursorStyle(
+  element: HTMLElement,
+  style: CursorStyle,
+  originLeft: number,
+  originTop: number,
+  color: string,
+): void {
+  const percentage = Math.max(1, Math.min(100, style.cellPercentage || 100));
+  const width = style.shape === "vertical"
+    ? Math.max(2, Math.round((cellWidth * percentage) / 100))
+    : cellWidth;
+  const height = style.shape === "horizontal"
+    ? Math.max(2, Math.round((cellHeight * percentage) / 100))
+    : cellHeight;
+  const top = style.shape === "horizontal" ? originTop + cellHeight - height : originTop;
+
+  element.style.display = "block";
+  element.style.width = `${width}px`;
+  element.style.height = `${height}px`;
+  element.style.left = `${originLeft}px`;
+  element.style.top = `${top}px`;
+  element.style.backgroundColor = color;
+  element.style.opacity = style.shape === "block" ? "0.65" : "0.95";
 }
 
 function measureCellMetrics(): void {
@@ -2421,8 +2462,33 @@ function renderMessageLayers(state: RendererSessionState): void {
 
   const statusLayer = document.getElementById("message-status-layer");
   if (statusLayer) {
-    statusLayer.classList.remove("message-status-layer--visible");
-    statusLayer.textContent = "";
+    const statusElement = statusLayer as HTMLElement;
+    statusElement.style.bottom = "auto";
+    statusElement.style.top = `${commandTop}px`;
+    statusElement.style.height = `${cellHeight}px`;
+    statusElement.style.lineHeight = `${cellHeight}px`;
+    statusElement.style.fontSize = `${terminalFontSize}px`;
+    const showmodeSlot = document.createElement("div");
+    showmodeSlot.dataset.role = "showmode";
+    const showcmdSlot = document.createElement("div");
+    showcmdSlot.className = "message-status__center";
+    showcmdSlot.dataset.role = "showcmd";
+    const rulerSlot = document.createElement("div");
+    rulerSlot.className = "message-status__right";
+    rulerSlot.dataset.role = "ruler";
+    statusLayer.replaceChildren(showmodeSlot, showcmdSlot, rulerSlot);
+    const showmode = state.messages.showmode;
+    const showcmd = state.messages.showcmd;
+    const ruler = state.messages.ruler;
+    const visible = !state.cmdline.visible && visibleMessageEntries(state).length === 0 && (showmode !== "" || showcmd !== "" || ruler !== "");
+    if (visible) {
+      showmodeSlot.textContent = showmode;
+      showcmdSlot.textContent = showcmd;
+      rulerSlot.textContent = ruler;
+      statusLayer.classList.add("message-status-layer--visible");
+    } else {
+      statusLayer.classList.remove("message-status-layer--visible");
+    }
   }
 
   const historyLayer = document.getElementById("message-history-layer");
@@ -2519,12 +2585,14 @@ function renderState(state: RendererSessionState): void {
       const bounds = resolveWindowGridBounds(activeWindow);
       const row = bounds?.row ?? activeWindow.row!;
       const col = bounds?.col ?? activeWindow.col!;
-      cursor.style.display = "block";
-      cursor.style.width = `${cellWidth}px`;
-      cursor.style.height = `${cellHeight}px`;
-      cursor.style.left = `${(col + activeGridCursor.col) * cellWidth}px`;
-      cursor.style.top = `${(row + activeGridCursor.row) * cellHeight}px`;
-      cursor.style.backgroundColor = foreground;
+      const cursorStyle = state.screen.mode.cursor;
+      applyCursorStyle(
+        cursor,
+        cursorStyle,
+        (col + activeGridCursor.col) * cellWidth,
+        (row + activeGridCursor.row) * cellHeight,
+        cursorColorForStyle(cursorStyle, state.screen.highlights, { foreground, background }),
+      );
     } else {
       cursor.style.display = "none";
     }
@@ -2558,10 +2626,14 @@ function renderState(state: RendererSessionState): void {
       cmdline.textContent = view.text;
       const commandCursor = document.createElement("span");
       commandCursor.className = "cmdline-cursor";
-      commandCursor.style.left = `${view.cursorColumn * cellWidth}px`;
-      commandCursor.style.width = `${cellWidth}px`;
-      commandCursor.style.height = `${cellHeight}px`;
-      commandCursor.style.backgroundColor = foreground;
+      const cursorStyle = state.screen.mode.cursor;
+      applyCursorStyle(
+        commandCursor,
+        cursorStyle,
+        view.cursorColumn * cellWidth,
+        0,
+        cursorColorForStyle(cursorStyle, state.screen.highlights, { foreground, background }),
+      );
       cmdline.appendChild(commandCursor);
       cmdline.classList.add("cmdline-layer--visible");
     } else {
@@ -2669,6 +2741,16 @@ function isModifierOnlyKey(key: string): boolean {
   return key === "Shift" || key === "Control" || key === "Alt" || key === "Meta";
 }
 
+function encodeLiteralKey(key: string): string | null {
+  if (key === "<") {
+    return "<lt>";
+  }
+  if (key.length === 1) {
+    return key;
+  }
+  return null;
+}
+
 function armPendingWindowCommand(): void {
   if (pendingWindowCommandTimer) {
     clearTimeout(pendingWindowCommandTimer);
@@ -2706,7 +2788,8 @@ function encodeKey(event: KeyboardEvent): string | null {
     }
     consumePendingWindowCommand();
     if (isWindowCommandFollower(event.key)) {
-      return `<C-W>${event.key}`;
+      const follower = encodeLiteralKey(event.key);
+      return follower ? `<C-W>${follower}` : null;
     }
     if (event.key === "Escape") {
       return "<Esc>";
@@ -2746,17 +2829,16 @@ function encodeKey(event: KeyboardEvent): string | null {
   }
 
   if (event.altKey) {
+    if (event.key === "<") {
+      return "<A-lt>";
+    }
     if (event.key.length === 1) {
       return `<A-${event.key}>`;
     }
     return null;
   }
 
-  if (event.key.length === 1) {
-    return event.key;
-  }
-
-  return null;
+  return encodeLiteralKey(event.key);
 }
 
 function dismissCommandMessagePager(): void {
@@ -2899,22 +2981,12 @@ async function dispatchKey(event: KeyboardEvent): Promise<boolean> {
       return false;
     }
 
-    if (event.ctrlKey && event.key.toLowerCase() === "w") {
-      consumePendingWindowCommand();
-      await window.jusi.runCommand("wincmd w");
-      return true;
+    const key = encodeKey(event);
+    if (!key) {
+      return false;
     }
-
-    consumePendingWindowCommand();
-    if (isWindowCommandFollower(event.key)) {
-      await window.jusi.runCommand(`wincmd ${event.key}`);
-      return true;
-    }
-    if (event.key === "Escape") {
-      await window.jusi.sendInput("<Esc>");
-      return true;
-    }
-    return false;
+    await window.jusi.sendWindowInput(key);
+    return true;
   }
 
   if (event.ctrlKey && event.key.toLowerCase() === "w") {

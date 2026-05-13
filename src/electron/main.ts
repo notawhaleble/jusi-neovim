@@ -1,15 +1,18 @@
-import { app, BrowserWindow, ipcMain, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage } from "electron";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PromisedNvimRpcClient } from "../bridge/promised-client.js";
 import { EmbeddedNvimSession, EmbeddedSessionState } from "../bridge/rpc-session.js";
-import { MirrorDocument } from "../core/types.js";
+import { MirrorDocument, UiSnapshot } from "../core/types.js";
 import { RendererSessionState } from "../renderer/contracts.js";
 import { isTabKey, isWindowCommandFollower, shouldBlockShellAccelerator } from "./key-routing.js";
 
 const appDisplayName = "Jusi Neovim";
 const appLogoFile = "jusi-neovim-logo.png";
+const linuxExecutableName = "jusi-neovim";
+const linuxDesktopFileName = `${linuxExecutableName}.desktop`;
 
 app.setName(appDisplayName);
 
@@ -29,8 +32,31 @@ function preloadScript(): string {
   return join(projectRoot(), "src", "electron", "preload.cjs");
 }
 
-function appIcon(): string {
-  return join(projectRoot(), "assets", appLogoFile);
+function appIconCandidates(): string[] {
+  const env = processEnv();
+  const appDir = env.APPDIR;
+  return [
+    ...(appDir
+      ? [
+          join(appDir, ".DirIcon"),
+          join(appDir, `${linuxExecutableName}.png`),
+          join(appDir, "usr", "share", "icons", "hicolor", "512x512", "apps", `${linuxExecutableName}.png`),
+          join(appDir, "usr", "share", "icons", "hicolor", "1024x1024", "apps", `${linuxExecutableName}.png`),
+        ]
+      : []),
+    join(projectRoot(), "build", "icons", "512x512.png"),
+    join(projectRoot(), "assets", appLogoFile),
+  ];
+}
+
+function appIconPath(): string {
+  return appIconCandidates().find((candidate) => existsSync(candidate)) ?? join(projectRoot(), "assets", appLogoFile);
+}
+
+function appIcon(): string | ReturnType<typeof nativeImage.createFromPath> {
+  const iconPath = appIconPath();
+  const icon = nativeImage.createFromPath(iconPath);
+  return icon.isEmpty() ? iconPath : icon;
 }
 
 function currentPlatform(): string {
@@ -39,11 +65,14 @@ function currentPlatform(): string {
 
 function configureAppIdentity(): void {
   app.setName(appDisplayName);
+  if (currentPlatform() === "linux") {
+    (app as unknown as { setDesktopName?: (name: string) => void }).setDesktopName?.(linuxDesktopFileName);
+  }
   app.setAboutPanelOptions?.({
     applicationName: appDisplayName,
-    iconPath: appIcon(),
+    iconPath: appIconPath(),
   });
-  app.dock?.setIcon(appIcon());
+  app.dock?.setIcon(appIconPath());
 
   if (currentPlatform() === "darwin") {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -78,12 +107,30 @@ function shouldRunStartupDemo(): boolean {
   return processEnv().JUSI_STARTUP_DEMO === "1";
 }
 
+function snapshotForRenderer(snapshot: UiSnapshot, debugUi: boolean): UiSnapshot {
+  if (debugUi || snapshot.currentTabId === null) {
+    return snapshot;
+  }
+
+  const tabs = snapshot.tabs.filter((tab) => tab.id === snapshot.currentTabId);
+  const windows = snapshot.windows.filter((window) => window.tabId === snapshot.currentTabId);
+  const visibleBufferIds = new Set(windows.map((window) => window.bufferId));
+  const buffers = snapshot.buffers.filter((buffer) => visibleBufferIds.has(buffer.id));
+  return {
+    currentTabId: snapshot.currentTabId,
+    tabs,
+    windows,
+    buffers,
+  };
+}
+
 function toRendererState(state: EmbeddedSessionState): RendererSessionState {
   const env = processEnv();
   const debugUi = env?.JUSI_DEBUG_UI === "1";
+  const snapshot = snapshotForRenderer(state.snapshot, debugUi);
   return {
     debugUi,
-    snapshot: state.snapshot,
+    snapshot,
     attachedWebViews: state.attachedWebViews,
     screen: debugUi ? state.screen : { ...state.screen, cells: undefined },
     grids: debugUi ? state.grids : state.grids.map((grid) => ({ ...grid, cells: undefined })),
@@ -170,6 +217,7 @@ async function createWindow(): Promise<void> {
     },
   });
   win.setTitle?.(appDisplayName);
+  win.setIcon?.(appIcon());
   (win as unknown as { setMenu?: (menu: null) => void }).setMenu?.(null);
 
   win.webContents.on("console-message", (_event, _level, message) => {
@@ -240,6 +288,14 @@ async function createWindow(): Promise<void> {
       return;
     }
     win.webContents.send("jusi:web-enter-mode", event);
+  });
+  let neovimExited = false;
+  session.onExit(() => {
+    neovimExited = true;
+    const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
+    if (!destroyed) {
+      win.close();
+    }
   });
 
   const [contentWidth, contentHeight] = win.getContentSize();
@@ -415,6 +471,10 @@ async function createWindow(): Promise<void> {
     await session.input(keys);
   });
 
+  ipcMain.handle("jusi:window-input", async (_event: unknown, keys: string) => {
+    await session.windowInput(keys);
+  });
+
   ipcMain.handle("jusi:resize", async (_event: unknown, columns: number, lines: number) => {
     await session.resize(columns, lines);
   });
@@ -438,12 +498,15 @@ async function createWindow(): Promise<void> {
   win.on("closed", async () => {
     ipcMain.removeHandler("jusi:get-initial-state");
     ipcMain.removeHandler("jusi:input");
+    ipcMain.removeHandler("jusi:window-input");
     ipcMain.removeHandler("jusi:resize");
     ipcMain.removeHandler("jusi:command");
     ipcMain.removeHandler("jusi:focus-window");
     ipcMain.removeHandler("jusi:set-cursor");
     ipcMain.removeHandler("jusi:update-web-mirror");
-    await session.dispose();
+    if (!neovimExited) {
+      await session.dispose();
+    }
   });
 
   await win.loadFile(rendererHtml());

@@ -34,63 +34,36 @@ export class NvimNotificationRouter {
 
   constructor(private readonly layout: NvimLayoutController) {}
 
-  route(notification: RawNotification): RoutedNotificationResult {
+  handle(notification: RawNotification): boolean {
     switch (notification.method) {
       case "redraw":
         this.handleRedraw(notification.args);
-        return {
-          snapshot: this.layout.getSnapshot(),
-          screen: this.screen.getState(),
-          grids: this.screen.getGridStates(),
-          cmdline: this.overlays.getCmdline(),
-          popupmenu: this.overlays.getPopupmenu(),
-          messages: this.overlays.getMessages(),
-          handled: true,
-        };
+        return true;
       case "jusi:layout":
         this.handleLayout(notification.args[0]);
-        return {
-          snapshot: this.layout.getSnapshot(),
-          screen: this.screen.getState(),
-          grids: this.screen.getGridStates(),
-          cmdline: this.overlays.getCmdline(),
-          popupmenu: this.overlays.getPopupmenu(),
-          messages: this.overlays.getMessages(),
-          handled: true,
-        };
+        return true;
       case "jusi:web-session":
         this.handleWebSession(notification.args[0]);
-        return {
-          snapshot: this.layout.getSnapshot(),
-          screen: this.screen.getState(),
-          grids: this.screen.getGridStates(),
-          cmdline: this.overlays.getCmdline(),
-          popupmenu: this.overlays.getPopupmenu(),
-          messages: this.overlays.getMessages(),
-          handled: true,
-        };
+        return true;
       case "jusi:web-mirror":
         this.handleWebMirror(notification.args[0]);
-        return {
-          snapshot: this.layout.getSnapshot(),
-          screen: this.screen.getState(),
-          grids: this.screen.getGridStates(),
-          cmdline: this.overlays.getCmdline(),
-          popupmenu: this.overlays.getPopupmenu(),
-          messages: this.overlays.getMessages(),
-          handled: true,
-        };
+        return true;
       default:
-        return {
-          snapshot: this.layout.getSnapshot(),
-          screen: this.screen.getState(),
-          grids: this.screen.getGridStates(),
-          cmdline: this.overlays.getCmdline(),
-          popupmenu: this.overlays.getPopupmenu(),
-          messages: this.overlays.getMessages(),
-          handled: false,
-        };
+        return false;
     }
+  }
+
+  route(notification: RawNotification): RoutedNotificationResult {
+    const handled = this.handle(notification);
+    return {
+      snapshot: this.layout.getVisibleSnapshot(),
+      screen: this.screen.getState(),
+      grids: this.screen.getGridStates(),
+      cmdline: this.overlays.getCmdline(),
+      popupmenu: this.overlays.getPopupmenu(),
+      messages: this.overlays.getMessages(),
+      handled,
+    };
   }
 
   private handleRedraw(args: unknown[]): void {

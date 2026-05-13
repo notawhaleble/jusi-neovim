@@ -8,6 +8,7 @@ import { RawNotification } from "./notification-router.js";
 import { buildNvimLaunchSpec, NvimLaunchSpec, NvimSpawnOptions } from "./spawn-config.js";
 
 type NotificationHandler = (notification: RawNotification) => void;
+type ExitHandler = () => void;
 
 type PromisedAttach = (writer: any, reader: any) => Promise<any>;
 
@@ -62,8 +63,10 @@ export function buildEmbeddedLaunchSpec(options: NvimSpawnOptions = {}): NvimLau
 
 export class PromisedNvimRpcClient implements NvimRpcClient {
   private readonly listeners = new Set<NotificationHandler>();
+  private readonly exitListeners = new Set<ExitHandler>();
   private nvim: any | null = null;
   private proc: any | null = null;
+  private exited = false;
 
   static async spawn(options: NvimSpawnOptions = {}): Promise<PromisedNvimRpcClient> {
     const client = new PromisedNvimRpcClient();
@@ -73,6 +76,10 @@ export class PromisedNvimRpcClient implements NvimRpcClient {
 
   onNotification(listener: NotificationHandler): void {
     this.listeners.add(listener);
+  }
+
+  onExit(listener: ExitHandler): void {
+    this.exitListeners.add(listener);
   }
 
   async request(method: string, args: unknown[] = []): Promise<unknown> {
@@ -125,6 +132,7 @@ export class PromisedNvimRpcClient implements NvimRpcClient {
     this.nvim = null;
     this.proc = null;
     this.listeners.clear();
+    this.exitListeners.clear();
   }
 
   private async connect(options: NvimSpawnOptions): Promise<void> {
@@ -137,6 +145,12 @@ export class PromisedNvimRpcClient implements NvimRpcClient {
     } as any);
 
     this.proc = proc;
+    (proc as any).once("exit", () => {
+      this.emitExit();
+    });
+    (proc as any).once("close", () => {
+      this.emitExit();
+    });
     this.nvim = await new Promise((resolve, reject) => {
       const onError = (error: unknown) => {
         (proc as any).removeListener("error", onError);
@@ -179,6 +193,16 @@ export class PromisedNvimRpcClient implements NvimRpcClient {
   private emitNotification(notification: RawNotification): void {
     for (const listener of this.listeners) {
       listener(notification);
+    }
+  }
+
+  private emitExit(): void {
+    if (this.exited) {
+      return;
+    }
+    this.exited = true;
+    for (const listener of this.exitListeners) {
+      listener();
     }
   }
 

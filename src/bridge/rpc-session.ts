@@ -17,6 +17,7 @@ import {
 
 export interface NvimRpcClient {
   onNotification(listener: (notification: RawNotification) => void): void;
+  onExit?(listener: () => void): void;
   request(method: string, args?: unknown[]): Promise<unknown>;
   notify(method: string, args?: unknown[]): Promise<void> | void;
   dispose(): Promise<void> | void;
@@ -56,6 +57,9 @@ export class EmbeddedNvimSession {
   private readonly webScrollListeners = new Set<(event: WebScrollEvent) => void>();
   private readonly webOpenLinkListeners = new Set<(event: WebOpenLinkEvent) => void>();
   private readonly webEnterModeListeners = new Set<(event: WebEnterModeEvent) => void>();
+  private readonly exitListeners = new Set<() => void>();
+  private pendingStateEmit: ReturnType<typeof setTimeout> | null = null;
+  private readonly pendingLayoutRefreshes = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(private readonly client: NvimRpcClient) {}
 
@@ -77,10 +81,12 @@ export class EmbeddedNvimSession {
         this.emitWebEnterMode(notification.args[0]);
         return;
       }
-      const result = this.router.route(notification);
-      if (result.handled) {
-        this.emitState();
+      if (this.router.handle(notification)) {
+        this.scheduleStateEmit();
       }
+    });
+    this.client.onExit?.(() => {
+      this.emitExit();
     });
   }
 
@@ -98,6 +104,10 @@ export class EmbeddedNvimSession {
 
   onWebEnterMode(listener: (event: WebEnterModeEvent) => void): void {
     this.webEnterModeListeners.add(listener);
+  }
+
+  onExit(listener: () => void): void {
+    this.exitListeners.add(listener);
   }
 
   async attachUi(columns: number, lines: number): Promise<void> {
@@ -119,16 +129,23 @@ export class EmbeddedNvimSession {
 
   async command(commandText: string): Promise<void> {
     await this.client.request("nvim_command", [commandText]);
-    await this.refreshLayoutSnapshot();
+    await this.refreshVisibleLayoutSnapshot();
   }
 
   async resize(columns: number, lines: number): Promise<void> {
     await this.client.request("nvim_ui_try_resize", [columns, lines]);
-    await this.refreshLayoutSnapshot();
+    await this.refreshVisibleLayoutSnapshot();
   }
 
   async input(keys: string): Promise<void> {
     await this.client.request("nvim_input", [keys]);
+  }
+
+  async windowInput(keys: string): Promise<void> {
+    await this.input(keys);
+    this.scheduleVisibleLayoutRefresh(0);
+    this.scheduleVisibleLayoutRefresh(25);
+    this.scheduleVisibleLayoutRefresh(75);
   }
 
   async setRegister(name: string, value: string): Promise<void> {
@@ -189,7 +206,7 @@ export class EmbeddedNvimSession {
       `,
       [windowId, row, col],
     ]);
-    await this.refreshLayoutSnapshot();
+    await this.refreshVisibleLayoutSnapshot();
   }
 
   route(notification: RawNotification): RoutedNotificationResult {
@@ -226,10 +243,25 @@ export class EmbeddedNvimSession {
 
   async dispose(): Promise<void> {
     await this.client.dispose();
+    if (this.pendingStateEmit) {
+      clearTimeout(this.pendingStateEmit);
+      this.pendingStateEmit = null;
+    }
+    for (const timer of this.pendingLayoutRefreshes) {
+      clearTimeout(timer);
+    }
+    this.pendingLayoutRefreshes.clear();
     this.listeners.clear();
     this.webScrollListeners.clear();
     this.webOpenLinkListeners.clear();
     this.webEnterModeListeners.clear();
+    this.exitListeners.clear();
+  }
+
+  private emitExit(): void {
+    for (const listener of this.exitListeners) {
+      listener();
+    }
   }
 
   private emitWebScroll(payload: unknown): void {
@@ -279,15 +311,29 @@ export class EmbeddedNvimSession {
   }
 
   private emitState(): void {
+    if (this.pendingStateEmit) {
+      clearTimeout(this.pendingStateEmit);
+      this.pendingStateEmit = null;
+    }
     const state = this.getState();
     for (const listener of this.listeners) {
       listener(state);
     }
   }
 
+  private scheduleStateEmit(): void {
+    if (this.pendingStateEmit) {
+      return;
+    }
+    this.pendingStateEmit = setTimeout(() => {
+      this.pendingStateEmit = null;
+      this.emitState();
+    }, 0);
+  }
+
   private getState(): EmbeddedSessionState {
     return {
-      snapshot: this.getSnapshot(),
+      snapshot: this.layout.getVisibleSnapshot(),
       attachedWebViews: this.getAttachedWebViews(),
       screen: this.getScreenState(),
       grids: this.getGridStates(),
@@ -306,5 +352,24 @@ export class EmbeddedNvimSession {
     } catch (_error) {
       // Layout notifications are best-effort; the redraw stream remains the primary UI source.
     }
+  }
+
+  private async refreshVisibleLayoutSnapshot(): Promise<void> {
+    try {
+      await this.client.request("nvim_exec_lua", [
+        "if _G.jusi_neovim_notify_visible_snapshot then _G.jusi_neovim_notify_visible_snapshot() elseif _G.jusi_neovim_notify_full_snapshot then _G.jusi_neovim_notify_full_snapshot() end",
+        [],
+      ]);
+    } catch (_error) {
+      // Layout notifications are best-effort; the redraw stream remains the primary UI source.
+    }
+  }
+
+  private scheduleVisibleLayoutRefresh(delayMs: number): void {
+    const timer = setTimeout(() => {
+      this.pendingLayoutRefreshes.delete(timer);
+      void this.refreshVisibleLayoutSnapshot();
+    }, delayMs);
+    this.pendingLayoutRefreshes.add(timer);
   }
 }
