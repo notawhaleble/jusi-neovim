@@ -48,12 +48,16 @@ let pendingWindowCommandTimer: ReturnType<typeof setTimeout> | null = null;
 let pointerHidden = false;
 let terminalFontSize = 14;
 let requestGridResize: () => void = () => {};
+let messagePagerSignature: string | null = null;
+let messagePagerDismissedSignature: string | null = null;
+let messagePagerScroll = 0;
 
 const minTerminalFontSize = 10;
 const maxTerminalFontSize = 26;
 const defaultTerminalFontSize = 14;
 const terminalLineHeightRatio = 18 / 14;
 const zoomStorageKey = "jusi-neovim:terminal-font-size";
+const hitEnterPromptText = "Press ENTER or type command to continue";
 
 function parseHexColor(color: string): [number, number, number] | null {
   const match = /^#([0-9a-f]{6})$/i.exec(color);
@@ -416,7 +420,7 @@ function formatCmdline(state: RendererSessionState["cmdline"], maxColumns: numbe
 
 function getCommandAreaHeight(state: RendererSessionState): number {
   return commandAreaHeight({
-    cmdlineVisible: state.cmdline.visible || state.messages.entries.some((entry) => entry.text !== ""),
+    cmdlineVisible: state.cmdline.visible || visibleMessageEntries(state).length > 0,
     blockLineCount: visibleCmdlineBlockLines(state).length,
   }, { cellWidth, cellHeight });
 }
@@ -432,8 +436,132 @@ function visibleCmdlineBlockLines(state: RendererSessionState): string[] {
 
 function commandBlockLines(state: RendererSessionState): string[] {
   const lines = state.cmdline.blockLines.flatMap(splitCommandBlockLine);
+  lines.push(...visibleCommandMessageBlockLines(state));
+  return lines;
+}
+
+function commandMessageBlockLines(state: RendererSessionState): string[] {
+  const lines: string[] = [];
+  const hasReturnPrompt = hasReturnPromptMessage(state);
+  if (hasReturnPrompt) {
+    lines.push(...state.messages.entries
+      .filter((entry) => entry.text !== "" && !isReturnPromptMessage(entry))
+      .flatMap(messageBlockLines));
+  } else {
+    lines.push(...state.messages.entries
+      .filter(isMultilineMessageEntry)
+      .flatMap(messageBlockLines));
+  }
   if (state.messages.historyVisible) {
     lines.push(...state.messages.history.flatMap((entry) => splitCommandBlockLine(entry.text)));
+  }
+  return lines;
+}
+
+function commandMessageSignature(state: RendererSessionState): string | null {
+  const lines = commandMessageBlockLines(state);
+  if (lines.length === 0) {
+    return null;
+  }
+  return [
+    state.messages.version,
+    hasReturnPromptMessage(state) ? "native-prompt" : "synthetic-prompt",
+    lines.join("\n"),
+  ].join("\u001f");
+}
+
+function syncMessagePagerState(state: RendererSessionState): void {
+  const signature = commandMessageSignature(state);
+  if (signature !== messagePagerSignature) {
+    messagePagerSignature = signature;
+    messagePagerScroll = 0;
+  }
+  clampMessagePagerScroll(state);
+}
+
+function clampMessagePagerScroll(state: RendererSessionState): void {
+  const maxRows = Math.max(1, state.screen.rows);
+  const maxScroll = Math.max(0, commandMessageBlockLines(state).length - maxRows);
+  messagePagerScroll = Math.max(0, Math.min(messagePagerScroll, maxScroll));
+}
+
+function isCommandMessageDismissed(state: RendererSessionState): boolean {
+  const signature = commandMessageSignature(state);
+  return signature !== null && signature === messagePagerDismissedSignature;
+}
+
+function visibleCommandMessageBlockLines(state: RendererSessionState): string[] {
+  const signature = commandMessageSignature(state);
+  if (signature === null || signature === messagePagerDismissedSignature) {
+    return [];
+  }
+  const lines = commandMessageBlockLines(state);
+  const maxRows = Math.max(0, state.screen.rows);
+  if (lines.length <= maxRows) {
+    return lines;
+  }
+  return lines.slice(messagePagerScroll, messagePagerScroll + maxRows);
+}
+
+function commandMessagePrompt(state: RendererSessionState): string | null {
+  const signature = commandMessageSignature(state);
+  if (signature === null || isCommandMessageDismissed(state)) {
+    return null;
+  }
+
+  const returnPromptEntry = state.messages.entries.find(isReturnPromptMessage);
+  if (returnPromptEntry) {
+    return returnPromptEntry.text || hitEnterPromptText;
+  }
+
+  const lines = commandMessageBlockLines(state);
+  const maxRows = Math.max(1, state.screen.rows);
+  if (lines.length > maxRows && messagePagerScroll + maxRows < lines.length) {
+    return "-- More --";
+  }
+  return hitEnterPromptText;
+}
+
+function visibleMessageEntries(state: RendererSessionState): RendererSessionState["messages"]["entries"] {
+  const prompt = commandMessagePrompt(state);
+  if (prompt) {
+    return [{
+      kind: "return_prompt",
+      text: prompt,
+      id: null,
+    }];
+  }
+  if (isCommandMessageDismissed(state)) {
+    return [];
+  }
+
+  const entriesWithText = state.messages.entries.filter((entry) => entry.text !== "");
+  const returnPromptEntry = entriesWithText.find(isReturnPromptMessage);
+  if (returnPromptEntry) {
+    return [returnPromptEntry];
+  }
+  return entriesWithText.filter((entry) => !isMultilineMessageEntry(entry)).slice(-1);
+}
+
+function hasReturnPromptMessage(state: RendererSessionState): boolean {
+  return state.messages.entries.some(isReturnPromptMessage);
+}
+
+function isReturnPromptMessage(entry: RendererSessionState["messages"]["entries"][number]): boolean {
+  return entry.kind === "return_prompt" || /press\s+(enter|return)/i.test(entry.text);
+}
+
+function isMultilineMessageEntry(entry: RendererSessionState["messages"]["entries"][number]): boolean {
+  return entry.text.includes("\n");
+}
+
+function messageBlockLines(entry: RendererSessionState["messages"]["entries"][number]): string[] {
+  const lines = splitCommandBlockLine(entry.text);
+  while (lines.length > 0 && lines[0] === "") {
+    lines.shift();
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
   }
   return lines;
 }
@@ -2277,7 +2405,7 @@ function renderMessageLayers(state: RendererSessionState): void {
     (messageLayer as HTMLElement).style.height = `${cellHeight}px`;
     (messageLayer as HTMLElement).style.overflow = "hidden";
     messageLayer.innerHTML = "";
-    const visibleEntries = state.messages.entries.filter((entry) => entry.text !== "");
+    const visibleEntries = visibleMessageEntries(state);
     if (visibleEntries.length > 0) {
       messageLayer.classList.add("message-layer--visible");
       visibleEntries.forEach((entry) => {
@@ -2348,6 +2476,7 @@ function layoutTerminalSurfaces(state: RendererSessionState): void {
 
 function renderState(state: RendererSessionState): void {
   latestState = state;
+  syncMessagePagerState(state);
   const activeTab = state.snapshot.tabs.find((tab) => tab.id === state.snapshot.currentTabId);
   syncWebModeToState(state);
   document.body.dataset.currentTabId = String(state.snapshot.currentTabId ?? "");
@@ -2630,9 +2759,139 @@ function encodeKey(event: KeyboardEvent): string | null {
   return null;
 }
 
+function dismissCommandMessagePager(): void {
+  if (!latestState) {
+    return;
+  }
+  const signature = commandMessageSignature(latestState);
+  if (!signature) {
+    return;
+  }
+  messagePagerDismissedSignature = signature;
+  messagePagerScroll = 0;
+  scheduleRenderState(latestState);
+}
+
+async function dismissCommandMessagePagerWithInput(event: KeyboardEvent): Promise<void> {
+  const shouldForward = latestState ? hasReturnPromptMessage(latestState) : false;
+  dismissCommandMessagePager();
+  if (!shouldForward) {
+    return;
+  }
+  const encoded = encodeKey(event);
+  if (encoded) {
+    await window.jusi.sendInput(encoded);
+  }
+}
+
+function scrollCommandMessagePager(delta: number): void {
+  if (!latestState) {
+    return;
+  }
+  const maxRows = Math.max(1, latestState.screen.rows);
+  const maxScroll = Math.max(0, commandMessageBlockLines(latestState).length - maxRows);
+  messagePagerScroll = Math.max(0, Math.min(messagePagerScroll + delta, maxScroll));
+  scheduleRenderState(latestState);
+}
+
+async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boolean> {
+  if (!latestState || event.metaKey || isModifierOnlyKey(event.key)) {
+    return false;
+  }
+
+  const signature = commandMessageSignature(latestState);
+  if (!signature || signature === messagePagerDismissedSignature) {
+    return false;
+  }
+
+  const lines = commandMessageBlockLines(latestState);
+  if (lines.length === 0) {
+    return false;
+  }
+
+  const maxRows = Math.max(1, latestState.screen.rows);
+  const maxScroll = Math.max(0, lines.length - maxRows);
+  const key = event.key;
+  const lowerKey = key.toLowerCase();
+
+  if (key === "Escape" || lowerKey === "q") {
+    dismissCommandMessagePager();
+    return true;
+  }
+
+  if (maxScroll > 0) {
+    if (key === "PageDown" || key === " " || (event.ctrlKey && lowerKey === "f")) {
+      if (messagePagerScroll >= maxScroll) {
+        await dismissCommandMessagePagerWithInput(event);
+      } else {
+        scrollCommandMessagePager(maxRows);
+      }
+      return true;
+    }
+    if (key === "Enter") {
+      if (messagePagerScroll >= maxScroll) {
+        await dismissCommandMessagePagerWithInput(event);
+      } else {
+        scrollCommandMessagePager(1);
+      }
+      return true;
+    }
+    if (key === "ArrowDown" || lowerKey === "j" || (event.ctrlKey && lowerKey === "e")) {
+      if (messagePagerScroll >= maxScroll) {
+        dismissCommandMessagePager();
+        const encoded = encodeKey(event);
+        if (encoded) {
+          await window.jusi.sendInput(encoded);
+        }
+      } else {
+        scrollCommandMessagePager(1);
+      }
+      return true;
+    }
+    if (key === "ArrowUp" || lowerKey === "k" || (event.ctrlKey && lowerKey === "y")) {
+      scrollCommandMessagePager(-1);
+      return true;
+    }
+    if ((event.ctrlKey && lowerKey === "d") || lowerKey === "d") {
+      scrollCommandMessagePager(Math.max(1, Math.floor(maxRows / 2)));
+      return true;
+    }
+    if ((event.ctrlKey && lowerKey === "u") || lowerKey === "u") {
+      scrollCommandMessagePager(-Math.max(1, Math.floor(maxRows / 2)));
+      return true;
+    }
+    if (key === "PageUp" || (event.ctrlKey && lowerKey === "b")) {
+      scrollCommandMessagePager(-maxRows);
+      return true;
+    }
+    if (lowerKey === "g") {
+      messagePagerScroll = key === "G" ? maxScroll : 0;
+      scheduleRenderState(latestState);
+      return true;
+    }
+  }
+
+  if (key === "Enter") {
+    await dismissCommandMessagePagerWithInput(event);
+    return true;
+  }
+
+  dismissCommandMessagePager();
+  const encoded = encodeKey(event);
+  if (!encoded) {
+    return true;
+  }
+  await window.jusi.sendInput(encoded);
+  return true;
+}
+
 async function dispatchKey(event: KeyboardEvent): Promise<boolean> {
   if (event.metaKey) {
     return false;
+  }
+
+  if (await dispatchCommandMessagePagerKey(event)) {
+    return true;
   }
 
   if (hasPendingWindowCommand()) {

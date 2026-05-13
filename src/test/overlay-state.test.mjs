@@ -62,6 +62,7 @@ function testTracksMessagesAndHistoryAppend() {
   ]);
 
   assert.deepEqual(overlays.getMessages(), {
+    version: 3,
     entries: [{ kind: "echo", text: "hello world", id: "m1" }],
     showmode: "-- INSERT --",
     showcmd: "3/9",
@@ -78,6 +79,7 @@ function testTracksMessagesAndHistoryAppend() {
   ]);
 
   assert.deepEqual(overlays.getMessages(), {
+    version: 4,
     entries: [],
     showmode: "-- INSERT --",
     showcmd: "3/9",
@@ -94,6 +96,7 @@ function testTracksMessagesAndHistoryAppend() {
   ]);
 
   assert.deepEqual(overlays.getMessages(), {
+    version: 5,
     entries: [{ kind: "return_prompt", text: "Press ENTER or type command to continue", id: "prompt" }],
     showmode: "-- INSERT --",
     showcmd: "3/9",
@@ -113,6 +116,7 @@ function testTracksMessagesAndHistoryAppend() {
   ]);
 
   assert.deepEqual(overlays.getMessages(), {
+    version: 6,
     entries: [],
     showmode: "",
     showcmd: "",
@@ -136,6 +140,7 @@ function testTracksDirectMessagesHistoryPayload() {
   ]);
 
   assert.deepEqual(overlays.getMessages(), {
+    version: 1,
     entries: [],
     showmode: "",
     showcmd: "",
@@ -148,8 +153,58 @@ function testTracksDirectMessagesHistoryPayload() {
   });
 }
 
+function testTracksHitEnterCommandOutput() {
+  const overlays = new NvimOverlayState();
+
+  overlays.handleRedraw([
+    ["msg_show", ["list_cmd", [[0, "  1 %a   \"one.txt\" line 1", 0]], false, true, false, "ls1", ""]],
+    ["msg_show", ["list_cmd", [[0, "  2      \"two.txt\" line 1", 0]], false, true, false, "ls2", ""]],
+    ["msg_show", ["return_prompt", [[0, "Press ENTER or type command to continue", 0]], false, true, false, "prompt", ""]],
+  ]);
+
+  assert.deepEqual(overlays.getMessages(), {
+    version: 3,
+    entries: [
+      { kind: "list_cmd", text: "  1 %a   \"one.txt\" line 1", id: "ls1" },
+      { kind: "list_cmd", text: "  2      \"two.txt\" line 1", id: "ls2" },
+      { kind: "return_prompt", text: "Press ENTER or type command to continue", id: "prompt" },
+    ],
+    showmode: "",
+    showcmd: "",
+    ruler: "",
+    history: [],
+    historyVisible: false,
+  });
+}
+
+function testTracksMultilineCommandOutput() {
+  const overlays = new NvimOverlayState();
+
+  overlays.handleRedraw([
+    ["msg_show", ["list_cmd", [[0, "\n  1 %a   \"[No Name]\"                    line 1\n  2  h   \"[Scratch]\"                    line 0", 0]], false, false]],
+  ]);
+
+  assert.deepEqual(overlays.getMessages(), {
+    version: 1,
+    entries: [
+      {
+        kind: "list_cmd",
+        text: "\n  1 %a   \"[No Name]\"                    line 1\n  2  h   \"[Scratch]\"                    line 0",
+        id: null,
+      },
+    ],
+    showmode: "",
+    showcmd: "",
+    ruler: "",
+    history: [],
+    historyVisible: false,
+  });
+}
+
 testTracksCmdlineShapeAndBlock();
 testTracksMessagesAndHistoryAppend();
 testTracksDirectMessagesHistoryPayload();
+testTracksHitEnterCommandOutput();
+testTracksMultilineCommandOutput();
 
 console.log("overlay-state tests passed");

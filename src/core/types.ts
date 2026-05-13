@@ -193,6 +193,7 @@ export interface MessageEntry {
 }
 
 export interface MessageState {
+  version: number;
   entries: MessageEntry[];
   showmode: string;
   showcmd: string;

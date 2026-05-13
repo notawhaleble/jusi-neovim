@@ -1,5 +1,7 @@
 import { CmdlineState, MessageEntry, MessageState, PopupmenuItem, PopupmenuState } from "../core/types.js";
 
+const maxMessageEntries = 200;
+
 function flattenChunks(chunks: unknown[]): string {
   let text = "";
   for (const chunk of chunks) {
@@ -35,6 +37,7 @@ export class NvimOverlayState {
   };
 
   private messages: MessageState = {
+    version: 0,
     entries: [],
     showmode: "",
     showcmd: "",
@@ -221,6 +224,7 @@ export class NvimOverlayState {
         case "msg_clear":
           this.messages = {
             ...this.messages,
+            version: this.messages.version + 1,
             entries: [],
             historyVisible: this.messages.historyVisible && !this.hasReturnPromptMessage(),
           };
@@ -248,6 +252,7 @@ export class NvimOverlayState {
             const normalized = this.normalizeHistoryEntries(this.extractHistoryEntries(payloads));
             this.messages = {
               ...this.messages,
+              version: this.messages.version + 1,
               historyVisible: true,
               history: normalized,
             };
@@ -351,6 +356,7 @@ export class NvimOverlayState {
         };
         this.messages = {
           ...this.messages,
+          version: this.messages.version + 1,
           entries,
           historyVisible,
         };
@@ -372,7 +378,8 @@ export class NvimOverlayState {
 
     this.messages = {
       ...this.messages,
-      entries: entries.slice(-6),
+      version: this.messages.version + 1,
+      entries: entries.slice(-maxMessageEntries),
       historyVisible,
     };
   }
