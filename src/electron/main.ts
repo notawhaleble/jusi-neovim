@@ -71,7 +71,11 @@ function processEnv(): Record<string, string | undefined> {
 }
 
 function shouldLaunchCleanNvim(): boolean {
-  return processEnv().JUSI_NVIM_CLEAN !== "0";
+  return processEnv().JUSI_NVIM_CLEAN === "1";
+}
+
+function shouldRunStartupDemo(): boolean {
+  return processEnv().JUSI_STARTUP_DEMO === "1";
 }
 
 function toRendererState(state: EmbeddedSessionState): RendererSessionState {
@@ -371,25 +375,27 @@ async function createWindow(): Promise<void> {
     });
   };
   app.on("web-contents-created", webContentsCreatedHandler);
-  const startupCommands = [
-    "set laststatus=2 noshowmode noruler",
-    "enew",
-    "setlocal buftype=nofile bufhidden=hide noswapfile",
-    "call setline(1, ['jusi-neovim', '', 'Left split is a normal Neovim buffer.', 'Right split is a web buffer.', '', 'Keys currently go to Neovim.', 'Resize the window to see grid + web bounds stay in sync.'])",
-    "vsplit",
-    "wincmd l",
-    "enew",
-    "setlocal buftype=nofile bufhidden=hide noswapfile",
-    "JusiWebBuffer https://example.com",
-    "wincmd h",
-    "normal! gg",
-  ];
-  for (const command of startupCommands) {
-    try {
-      await session.command(command);
-    } catch (error) {
-      console.error("[startup-command-failed]", command, error);
-      throw error;
+  if (shouldRunStartupDemo()) {
+    const startupCommands = [
+      "set laststatus=2 noshowmode noruler",
+      "enew",
+      "setlocal buftype=nofile bufhidden=hide noswapfile",
+      "call setline(1, ['jusi-neovim', '', 'Left split is a normal Neovim buffer.', 'Right split is a web buffer.', '', 'Keys currently go to Neovim.', 'Resize the window to see grid + web bounds stay in sync.'])",
+      "vsplit",
+      "wincmd l",
+      "enew",
+      "setlocal buftype=nofile bufhidden=hide noswapfile",
+      "JusiWebBuffer https://example.com",
+      "wincmd h",
+      "normal! gg",
+    ];
+    for (const command of startupCommands) {
+      try {
+        await session.command(command);
+      } catch (error) {
+        console.error("[startup-command-failed]", command, error);
+        throw error;
+      }
     }
   }
 

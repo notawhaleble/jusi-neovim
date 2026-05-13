@@ -23,6 +23,12 @@ function runtimeRoot(): string {
   return join(projectRoot(), "runtime");
 }
 
+function formatSpawnError(error: unknown, command: string, env: Record<string, string | undefined>): Error {
+  const details = error instanceof Error ? error.message : String(error);
+  const pathValue = Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] ?? "";
+  return new Error(`Failed to launch Neovim using "${command}": ${details}. PATH=${pathValue}`);
+}
+
 function promisedClientCandidates(): string[] {
   return [
     "promised-neovim-client",
@@ -126,11 +132,27 @@ export class PromisedNvimRpcClient implements NvimRpcClient {
     const launch = buildEmbeddedLaunchSpec(options);
     const proc = spawn(launch.command, launch.args, {
       cwd: projectRoot(),
+      env: launch.env,
       stdio: ["pipe", "pipe", "pipe"],
-    });
+    } as any);
 
     this.proc = proc;
-    this.nvim = await attach(proc.stdin, proc.stdout);
+    this.nvim = await new Promise((resolve, reject) => {
+      const onError = (error: unknown) => {
+        (proc as any).removeListener("error", onError);
+        reject(formatSpawnError(error, launch.command, launch.env));
+      };
+      (proc as any).once("error", onError);
+      attach(proc.stdin, proc.stdout)
+        .then((nvim) => {
+          (proc as any).removeListener("error", onError);
+          resolve(nvim);
+        })
+        .catch((error: unknown) => {
+          (proc as any).removeListener("error", onError);
+          reject(error);
+        });
+    });
     const session = this.nvim._session;
 
     if (session && typeof session.on === "function") {

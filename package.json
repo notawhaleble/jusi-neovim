@@ -3,12 +3,49 @@
   "productName": "Jusi Neovim",
   "version": "0.1.0",
   "private": true,
+  "main": "dist/electron/main.js",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "electron": "npm run build && node scripts/run-electron.mjs",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --publish never",
+    "dist:linux": "npm run build && electron-builder --linux AppImage --publish never",
+    "dist:linux:x64": "npm run build && electron-builder --linux AppImage --x64 --publish never",
     "smoke:live": "npm run build && node dist/smoke/live-session.js",
     "test": "npm run build && node src/test/run-tests.mjs"
+  },
+  "build": {
+    "appId": "dev.jusi.neovim",
+    "productName": "Jusi Neovim",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "src/electron/preload.cjs",
+      "src/renderer/index.html",
+      "runtime/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "dist/electron/main.js"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development",
+      "icon": "assets/jusi-neovim-logo.png"
+    }
   },
   "dependencies": {
     "promised-neovim-client": "^2.0.2"
@@ -16,6 +53,7 @@
   "devDependencies": {
     "@types/node": "^24.7.2",
     "electron": "^38.3.0",
+    "electron-builder": "^26.8.1",
     "tsx": "^4.20.3",
     "typescript": "^5.9.3"
   }

@@ -4,3 +4,4 @@ import "./screen-state.test.mjs";
 import "./compositor.test.mjs";
 import "./key-routing.test.mjs";
 import "./rpc-session.test.mjs";
+import "./spawn-config.test.mjs";
