@@ -15,3 +15,9 @@ should participate in the same composed scene as cmdline, popupmenu, floating
 windows, and regular splits.
 
 See [docs/architecture.md](/Users/niku/Documents/dev/jusi-neovim/docs/architecture.md).
+
+## Electron clipboard provider
+
+Set `JUSI_NVIM_CLIPBOARD=electron` when launching jusi-neovim to make Neovim's
+`"*` and `"+` registers use Electron's system clipboard bridge. This is useful
+on machines where Neovim itself cannot find a native clipboard provider.

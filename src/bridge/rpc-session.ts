@@ -17,6 +17,7 @@ import {
 
 export interface NvimRpcClient {
   onNotification(listener: (notification: RawNotification) => void): void;
+  onRequest?(listener: (request: RawNotification) => unknown): void;
   onExit?(listener: () => void): void;
   request(method: string, args?: unknown[]): Promise<unknown>;
   notify(method: string, args?: unknown[]): Promise<void> | void;
@@ -49,6 +50,12 @@ export interface WebEnterModeEvent {
   windowId: number;
 }
 
+export interface ClipboardCopyEvent {
+  register: string;
+  lines: unknown;
+  regtype: unknown;
+}
+
 export class EmbeddedNvimSession {
   private readonly layout = new NvimLayoutController();
   private readonly router = new NvimNotificationRouter(this.layout);
@@ -57,6 +64,7 @@ export class EmbeddedNvimSession {
   private readonly webScrollListeners = new Set<(event: WebScrollEvent) => void>();
   private readonly webOpenLinkListeners = new Set<(event: WebOpenLinkEvent) => void>();
   private readonly webEnterModeListeners = new Set<(event: WebEnterModeEvent) => void>();
+  private readonly clipboardCopyListeners = new Set<(event: ClipboardCopyEvent) => void>();
   private readonly exitListeners = new Set<() => void>();
   private pendingStateEmit: ReturnType<typeof setTimeout> | null = null;
   private readonly pendingLayoutRefreshes = new Set<ReturnType<typeof setTimeout>>();
@@ -79,6 +87,10 @@ export class EmbeddedNvimSession {
       }
       if (notification.method === "jusi:web-enter-mode") {
         this.emitWebEnterMode(notification.args[0]);
+        return;
+      }
+      if (notification.method === "jusi:clipboard-copy") {
+        this.emitClipboardCopy(notification.args[0]);
         return;
       }
       if (this.router.handle(notification)) {
@@ -104,6 +116,10 @@ export class EmbeddedNvimSession {
 
   onWebEnterMode(listener: (event: WebEnterModeEvent) => void): void {
     this.webEnterModeListeners.add(listener);
+  }
+
+  onClipboardCopy(listener: (event: ClipboardCopyEvent) => void): void {
+    this.clipboardCopyListeners.add(listener);
   }
 
   onExit(listener: () => void): void {
@@ -150,6 +166,25 @@ export class EmbeddedNvimSession {
 
   async setRegister(name: string, value: string): Promise<void> {
     await this.client.request("nvim_call_function", ["setreg", [name, value]]);
+  }
+
+  async installClipboardProvider(runtimePluginPath?: string): Promise<void> {
+    const apiInfo = await this.client.request("nvim_get_api_info", []);
+    const channelId = Array.isArray(apiInfo) ? Number(apiInfo[0]) : 0;
+    await this.client.request("nvim_exec_lua", [
+      `
+      local runtime_plugin_path, channel_id = ...
+      if type(_G.jusi_neovim_install_clipboard_provider) ~= "function" and type(runtime_plugin_path) == "string" and runtime_plugin_path ~= "" then
+        vim.cmd("source " .. vim.fn.fnameescape(runtime_plugin_path))
+      end
+      if type(_G.jusi_neovim_install_clipboard_provider) ~= "function" then
+        error("jusi-neovim runtime clipboard provider is not available")
+      end
+      vim.g.jusi_neovim_rpc_channel = channel_id
+      _G.jusi_neovim_install_clipboard_provider()
+      `,
+      [runtimePluginPath ?? "", channelId],
+    ]);
   }
 
   async updateWebMirror(bufferId: number, mirror: MirrorDocument): Promise<void> {
@@ -226,7 +261,7 @@ export class EmbeddedNvimSession {
   }
 
   getGridStates(): GridScreenState[] {
-    return this.router.getGridStates();
+    return this.router.getGridStates(this.layout.getVisibleGridIds());
   }
 
   getCmdlineState(): CmdlineState {
@@ -255,6 +290,7 @@ export class EmbeddedNvimSession {
     this.webScrollListeners.clear();
     this.webOpenLinkListeners.clear();
     this.webEnterModeListeners.clear();
+    this.clipboardCopyListeners.clear();
     this.exitListeners.clear();
   }
 
@@ -307,6 +343,20 @@ export class EmbeddedNvimSession {
     }
     for (const listener of this.webEnterModeListeners) {
       listener({ bufferId, windowId });
+    }
+  }
+
+  private emitClipboardCopy(payload: unknown): void {
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+    const event = payload as { register?: unknown; lines?: unknown; regtype?: unknown };
+    const register = typeof event.register === "string" ? event.register : "";
+    if (register !== "*" && register !== "+") {
+      return;
+    }
+    for (const listener of this.clipboardCopyListeners) {
+      listener({ register, lines: event.lines, regtype: event.regtype });
     }
   }
 

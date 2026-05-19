@@ -8,7 +8,7 @@ import {
   ScreenLineRun,
 } from "../core/types.js";
 import { commandAreaHeight, placePopupmenu } from "./compositor.js";
-import { RendererApi, RendererSessionState } from "./contracts.js";
+import { PerfEvent, RendererApi, RendererSessionState } from "./contracts.js";
 
 declare global {
   interface Window {
@@ -59,6 +59,93 @@ const defaultTerminalFontSize = 14;
 const terminalLineHeightRatio = 18 / 14;
 const zoomStorageKey = "jusi-neovim:terminal-font-size";
 const hitEnterPromptText = "Press ENTER or type command to continue";
+const perfEnabled = new URLSearchParams(window.location.search).get("perf") === "1";
+
+let pendingInput: { at: number; seq: number; key: string } | null = null;
+let inputSeq = 0;
+let renderWindowStartedAt = performance.now();
+let renderWindowCount = 0;
+let renderWindowTotalMs = 0;
+let renderWindowMaxMs = 0;
+let renderWindowSlowCount = 0;
+
+function roundMs(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function perfLog(event: PerfEvent): void {
+  if (!perfEnabled) {
+    return;
+  }
+  window.jusi.logPerf(event);
+}
+
+function stateRenderMetrics(state: RendererSessionState): Record<string, number> {
+  return {
+    tabs: state.snapshot.tabs.length,
+    windows: state.snapshot.windows.length,
+    buffers: state.snapshot.buffers.length,
+    grids: state.grids.length,
+    attachedWebViews: state.attachedWebViews.length,
+    screenRows: state.screen.rows,
+    screenCols: state.screen.cols,
+    gridCells: state.grids.reduce((sum, grid) => sum + (grid.rows * grid.cols), 0),
+    highlightCount: Object.keys(state.screen.highlights).length,
+    screenRuns: state.screen.runs.reduce((sum, line) => sum + line.length, 0),
+    gridRuns: state.grids.reduce(
+      (sum, grid) => sum + grid.runs.reduce((gridSum, line) => gridSum + line.length, 0),
+      0,
+    ),
+    messages: state.messages.entries.length,
+  };
+}
+
+function noteRenderPerf(state: RendererSessionState, renderMs: number): void {
+  if (!perfEnabled) {
+    return;
+  }
+  renderWindowCount += 1;
+  renderWindowTotalMs += renderMs;
+  renderWindowMaxMs = Math.max(renderWindowMaxMs, renderMs);
+  if (renderMs >= 20) {
+    renderWindowSlowCount += 1;
+  }
+
+  const now = performance.now();
+  const input = pendingInput;
+  pendingInput = null;
+  const inputToRenderMs = input === null ? null : now - input.at;
+  const shouldSummarize = now - renderWindowStartedAt >= 5000;
+  const reason = renderMs >= 20
+    ? "slow"
+    : inputToRenderMs !== null && inputToRenderMs >= 80
+      ? "input"
+      : shouldSummarize
+        ? "summary"
+        : null;
+  if (reason !== null) {
+    perfLog({
+      kind: "render",
+      reason,
+      renderMs: roundMs(renderMs),
+      inputToRenderMs: inputToRenderMs === null ? null : roundMs(inputToRenderMs),
+      inputSeq: input?.seq ?? null,
+      inputKey: input?.key ?? null,
+      windowAvgRenderMs: roundMs(renderWindowTotalMs / renderWindowCount),
+      windowMaxRenderMs: roundMs(renderWindowMaxMs),
+      windowRenders: renderWindowCount,
+      windowSlowRenders: renderWindowSlowCount,
+      ...stateRenderMetrics(state),
+    });
+  }
+  if (shouldSummarize) {
+    renderWindowStartedAt = now;
+    renderWindowCount = 0;
+    renderWindowTotalMs = 0;
+    renderWindowMaxMs = 0;
+    renderWindowSlowCount = 0;
+  }
+}
 
 function parseHexColor(color: string): [number, number, number] | null {
   const match = /^#([0-9a-f]{6})$/i.exec(color);
@@ -476,7 +563,7 @@ function visibleCmdlineBlockLines(state: RendererSessionState): string[] {
 }
 
 function commandBlockLines(state: RendererSessionState): string[] {
-  const lines = state.cmdline.blockLines.flatMap(splitCommandBlockLine);
+  const lines = state.cmdline.blockLines.flatMap((line) => splitCommandBlockLine(line, state.screen.cols));
   lines.push(...visibleCommandMessageBlockLines(state));
   return lines;
 }
@@ -487,14 +574,14 @@ function commandMessageBlockLines(state: RendererSessionState): string[] {
   if (hasReturnPrompt) {
     lines.push(...state.messages.entries
       .filter((entry) => entry.text !== "" && !isReturnPromptMessage(entry))
-      .flatMap(messageBlockLines));
+      .flatMap((entry) => messageBlockLines(entry, state.screen.cols)));
   } else {
     lines.push(...state.messages.entries
-      .filter(isMultilineMessageEntry)
-      .flatMap(messageBlockLines));
+      .filter((entry) => isCommandBlockMessageEntry(entry, state.screen.cols))
+      .flatMap((entry) => messageBlockLines(entry, state.screen.cols)));
   }
   if (state.messages.historyVisible) {
-    lines.push(...state.messages.history.flatMap((entry) => splitCommandBlockLine(entry.text)));
+    lines.push(...state.messages.history.flatMap((entry) => splitCommandBlockLine(entry.text, state.screen.cols)));
   }
   return lines;
 }
@@ -581,7 +668,7 @@ function visibleMessageEntries(state: RendererSessionState): RendererSessionStat
   if (returnPromptEntry) {
     return [returnPromptEntry];
   }
-  return entriesWithText.filter((entry) => !isMultilineMessageEntry(entry)).slice(-1);
+  return entriesWithText.filter((entry) => !isCommandBlockMessageEntry(entry, state.screen.cols)).slice(-1);
 }
 
 function hasReturnPromptMessage(state: RendererSessionState): boolean {
@@ -596,8 +683,15 @@ function isMultilineMessageEntry(entry: RendererSessionState["messages"]["entrie
   return entry.text.includes("\n");
 }
 
-function messageBlockLines(entry: RendererSessionState["messages"]["entries"][number]): string[] {
-  const lines = splitCommandBlockLine(entry.text);
+function isCommandBlockMessageEntry(
+  entry: RendererSessionState["messages"]["entries"][number],
+  maxColumns: number,
+): boolean {
+  return isMultilineMessageEntry(entry) || splitCommandBlockLine(entry.text, maxColumns).length > 1;
+}
+
+function messageBlockLines(entry: RendererSessionState["messages"]["entries"][number], maxColumns: number): string[] {
+  const lines = splitCommandBlockLine(entry.text, maxColumns);
   while (lines.length > 0 && lines[0] === "") {
     lines.shift();
   }
@@ -607,8 +701,20 @@ function messageBlockLines(entry: RendererSessionState["messages"]["entries"][nu
   return lines;
 }
 
-function splitCommandBlockLine(line: string): string[] {
-  return line.split("\n");
+function splitCommandBlockLine(line: string, maxColumns: number): string[] {
+  const wrapColumns = Math.max(1, maxColumns);
+  return line.split("\n").flatMap((part) => wrapCommandTextLine(part, wrapColumns));
+}
+
+function wrapCommandTextLine(line: string, maxColumns: number): string[] {
+  if (line.length <= maxColumns) {
+    return [line];
+  }
+  const lines: string[] = [];
+  for (let index = 0; index < line.length; index += maxColumns) {
+    lines.push(line.slice(index, index + maxColumns));
+  }
+  return lines;
 }
 
 function terminalGridHeight(state: RendererSessionState): number {
@@ -1792,6 +1898,7 @@ function mirrorHash(mirror: MirrorDocument): string {
 }
 
 async function refreshMirror(host: HTMLDivElement): Promise<void> {
+  const startedAt = performance.now();
   const bufferId = Number(host.dataset.bufferId);
   const browser = host.querySelector("webview") as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
   if (!Number.isFinite(bufferId) || !browser || typeof browser.executeJavaScript !== "function") {
@@ -1808,8 +1915,20 @@ async function refreshMirror(host: HTMLDivElement): Promise<void> {
     mirrorVersions.set(bufferId, version);
     mirrorHashes.set(bufferId, hash);
     await window.jusi.updateWebMirror(bufferId, mirror);
+    perfLog({
+      kind: "mirror-refresh",
+      bufferId,
+      ms: roundMs(performance.now() - startedAt),
+      lines: mirror.lines.length,
+      chars: mirror.totalTextLength,
+    });
   } catch (error) {
     console.warn("[mirror-refresh-failed]", error);
+    perfLog({
+      kind: "mirror-refresh-error",
+      bufferId: Number.isFinite(bufferId) ? bufferId : null,
+      ms: roundMs(performance.now() - startedAt),
+    });
   }
 }
 
@@ -2003,6 +2122,7 @@ async function handleWebEnterMode(event: { bufferId: number; windowId: number })
 }
 
 async function projectMirrorSelection(host: HTMLDivElement, view: AttachedWebView): Promise<void> {
+  const startedAt = performance.now();
   const bufferId = Number(host.dataset.bufferId);
   const browser = host.querySelector("webview") as HTMLElement | null;
   const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
@@ -2068,6 +2188,15 @@ async function projectMirrorSelection(host: HTMLDivElement, view: AttachedWebVie
     if (Number.isFinite(bufferId)) {
       mirrorSelectionSignatures.set(bufferId, signature);
     }
+    const elapsed = performance.now() - startedAt;
+    if (elapsed >= 15) {
+      perfLog({
+        kind: "mirror-selection",
+        bufferId,
+        ms: roundMs(elapsed),
+        selectedChars: Math.abs(endIndex - startIndex),
+      });
+    }
   } catch (_error) {
     return;
   }
@@ -2106,6 +2235,7 @@ async function projectMirrorCursor(
   autoScroll = true,
   force = false,
 ): Promise<void> {
+  const startedAt = performance.now();
   const bufferId = Number(host.dataset.bufferId);
   const marker = host.querySelector(".web-view-box__mirror-cursor") as HTMLElement | null;
   if (!marker) {
@@ -2180,6 +2310,18 @@ async function projectMirrorCursor(
   }
   if (Number.isFinite(bufferId)) {
     mirrorCursorSignatures.set(bufferId, signature);
+  }
+  const elapsed = performance.now() - startedAt;
+  if (elapsed >= 15) {
+    perfLog({
+      kind: "mirror-cursor",
+      bufferId,
+      ms: roundMs(elapsed),
+      autoScroll,
+      forced: force,
+      row: cursor.row,
+      col: cursor.col,
+    });
   }
 }
 
@@ -2383,6 +2525,7 @@ function renderGridLayers(state: RendererSessionState): void {
       continue;
     }
     layer.remove();
+    persistentGridLayers.delete(gridId);
   }
 }
 
@@ -2434,6 +2577,7 @@ function renderWindowFrames(state: RendererSessionState): void {
       continue;
     }
     frame.remove();
+    persistentFrames.delete(windowId);
   }
 }
 
@@ -2541,6 +2685,7 @@ function layoutTerminalSurfaces(state: RendererSessionState): void {
 }
 
 function renderState(state: RendererSessionState): void {
+  const renderStartedAt = performance.now();
   latestState = state;
   syncMessagePagerState(state);
   const activeTab = state.snapshot.tabs.find((tab) => tab.id === state.snapshot.currentTabId);
@@ -2652,6 +2797,9 @@ function renderState(state: RendererSessionState): void {
       const stageHeight = stage instanceof HTMLElement ? stage.clientHeight : 0;
       const stageWidth = stage instanceof HTMLElement ? stage.clientWidth : 0;
       const commandHeight = getCommandAreaHeight(state);
+      const commandAreaTop = terminalGridHeight(state) - (visibleCmdlineBlockLines(state).length * cellHeight);
+      popup.style.maxHeight = "";
+      popup.style.maxWidth = "";
       popup.classList.add("popupmenu-layer--visible");
       state.popupmenu.items.forEach((item, index) => {
         const row = document.createElement("div");
@@ -2663,17 +2811,25 @@ function renderState(state: RendererSessionState): void {
         popup.appendChild(row);
       });
       const popupHeight = popup.getBoundingClientRect().height || (state.popupmenu.items.length * cellHeight);
+      const popupWidth = popup.getBoundingClientRect().width || 0;
       const placement = placePopupmenu({
         popupmenu: state.popupmenu,
         snapshot: state.snapshot,
         stage: { width: stageWidth, height: stageHeight, cellWidth, cellHeight },
         commandAreaHeight: commandHeight,
+        commandAreaTop,
         popupHeight,
+        popupWidth,
       });
       popup.style.left = `${placement.left}px`;
       popup.style.top = `${placement.top}px`;
+      popup.style.maxHeight = placement.maxHeight === undefined ? "" : `${placement.maxHeight}px`;
+      popup.style.maxWidth = placement.maxWidth === undefined ? "" : `${placement.maxWidth}px`;
+      popup.querySelector(".popupmenu-item--selected")?.scrollIntoView({ block: "nearest" });
     } else {
       popup.classList.remove("popupmenu-layer--visible");
+      popup.style.maxHeight = "";
+      popup.style.maxWidth = "";
     }
   }
 
@@ -2681,6 +2837,7 @@ function renderState(state: RendererSessionState): void {
   renderGridLayers(state);
   renderWindowFrames(state);
   renderAttachedViews(state.attachedWebViews);
+  noteRenderPerf(state, performance.now() - renderStartedAt);
 }
 
 function scheduleRenderState(state: RendererSessionState): void {
@@ -2741,6 +2898,34 @@ function isModifierOnlyKey(key: string): boolean {
   return key === "Shift" || key === "Control" || key === "Alt" || key === "Meta";
 }
 
+function isPhysicalKey(event: KeyboardEvent, code: string): boolean {
+  return event.code === code;
+}
+
+function physicalCtrlNotation(event: KeyboardEvent): string | null {
+  if (!event.ctrlKey || event.metaKey || event.altKey) {
+    return null;
+  }
+  const match = /^Key([A-Z])$/.exec(event.code);
+  if (match) {
+    return match[1];
+  }
+  switch (event.code) {
+    case "BracketLeft":
+      return "[";
+    case "BracketRight":
+      return "]";
+    case "Backslash":
+      return "\\";
+    case "Digit6":
+      return "^";
+    case "Minus":
+      return "_";
+    default:
+      return null;
+  }
+}
+
 function encodeLiteralKey(key: string): string | null {
   if (key === "<") {
     return "<lt>";
@@ -2782,7 +2967,7 @@ function encodeKey(event: KeyboardEvent): string | null {
     if (isModifierOnlyKey(event.key)) {
       return null;
     }
-    if (event.ctrlKey && event.key.toLowerCase() === "w") {
+    if (event.ctrlKey && isPhysicalKey(event, "KeyW")) {
       consumePendingWindowCommand();
       return "<C-W><C-W>";
     }
@@ -2797,14 +2982,14 @@ function encodeKey(event: KeyboardEvent): string | null {
     return null;
   }
 
-  if (event.ctrlKey && event.key.toLowerCase() === "w") {
+  if (event.ctrlKey && isPhysicalKey(event, "KeyW")) {
     armPendingWindowCommand();
     return null;
   }
 
-  if (event.ctrlKey && event.key.length === 1) {
-    const upper = event.key.toUpperCase();
-    return `<C-${upper}>`;
+  const ctrlNotation = physicalCtrlNotation(event);
+  if (ctrlNotation) {
+    return `<C-${ctrlNotation}>`;
   }
 
   switch (event.key) {
@@ -2902,7 +3087,7 @@ async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boo
   }
 
   if (maxScroll > 0) {
-    if (key === "PageDown" || key === " " || (event.ctrlKey && lowerKey === "f")) {
+    if (key === "PageDown" || key === " " || (event.ctrlKey && isPhysicalKey(event, "KeyF"))) {
       if (messagePagerScroll >= maxScroll) {
         await dismissCommandMessagePagerWithInput(event);
       } else {
@@ -2918,7 +3103,7 @@ async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boo
       }
       return true;
     }
-    if (key === "ArrowDown" || lowerKey === "j" || (event.ctrlKey && lowerKey === "e")) {
+    if (key === "ArrowDown" || lowerKey === "j" || (event.ctrlKey && isPhysicalKey(event, "KeyE"))) {
       if (messagePagerScroll >= maxScroll) {
         dismissCommandMessagePager();
         const encoded = encodeKey(event);
@@ -2930,19 +3115,19 @@ async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boo
       }
       return true;
     }
-    if (key === "ArrowUp" || lowerKey === "k" || (event.ctrlKey && lowerKey === "y")) {
+    if (key === "ArrowUp" || lowerKey === "k" || (event.ctrlKey && isPhysicalKey(event, "KeyY"))) {
       scrollCommandMessagePager(-1);
       return true;
     }
-    if ((event.ctrlKey && lowerKey === "d") || lowerKey === "d") {
+    if ((event.ctrlKey && isPhysicalKey(event, "KeyD")) || lowerKey === "d") {
       scrollCommandMessagePager(Math.max(1, Math.floor(maxRows / 2)));
       return true;
     }
-    if ((event.ctrlKey && lowerKey === "u") || lowerKey === "u") {
+    if ((event.ctrlKey && isPhysicalKey(event, "KeyU")) || lowerKey === "u") {
       scrollCommandMessagePager(-Math.max(1, Math.floor(maxRows / 2)));
       return true;
     }
-    if (key === "PageUp" || (event.ctrlKey && lowerKey === "b")) {
+    if (key === "PageUp" || (event.ctrlKey && isPhysicalKey(event, "KeyB"))) {
       scrollCommandMessagePager(-maxRows);
       return true;
     }
@@ -2968,6 +3153,14 @@ async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boo
 }
 
 async function dispatchKey(event: KeyboardEvent): Promise<boolean> {
+  if (!isModifierOnlyKey(event.key)) {
+    pendingInput = {
+      at: performance.now(),
+      seq: inputSeq + 1,
+      key: event.key,
+    };
+    inputSeq += 1;
+  }
   if (event.metaKey) {
     return false;
   }
@@ -2989,7 +3182,7 @@ async function dispatchKey(event: KeyboardEvent): Promise<boolean> {
     return true;
   }
 
-  if (event.ctrlKey && event.key.toLowerCase() === "w") {
+  if (event.ctrlKey && isPhysicalKey(event, "KeyW")) {
     armPendingWindowCommand();
     return true;
   }

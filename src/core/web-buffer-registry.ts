@@ -18,6 +18,12 @@ export class WebBufferRegistry {
     this.visibleState.buffers.set(buffer.id, buffer);
   }
 
+  unregisterBuffer(bufferId: number): void {
+    this.visibleState.buffers.delete(bufferId);
+    this.sessions.delete(bufferId);
+    this.reconcile();
+  }
+
   registerSession(session: Omit<WebBufferSession, "attachedWindowId" | "lastKnownTabId">): void {
     this.sessions.set(session.bufferId, {
       ...session,

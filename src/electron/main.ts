@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage } from "electron";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import { PromisedNvimRpcClient } from "../bridge/promised-client.js";
 import { EmbeddedNvimSession, EmbeddedSessionState } from "../bridge/rpc-session.js";
 import { MirrorDocument, UiSnapshot } from "../core/types.js";
 import { RendererSessionState } from "../renderer/contracts.js";
-import { isTabKey, isWindowCommandFollower, shouldBlockShellAccelerator } from "./key-routing.js";
+import { isCtrlAInput, isPhysicalKeyInput, isTabKey, isWindowCommandFollower, shouldBlockShellAccelerator } from "./key-routing.js";
 
 const appDisplayName = "Jusi Neovim";
 const appLogoFile = "jusi-neovim-logo.png";
@@ -28,8 +28,16 @@ function rendererHtml(): string {
   return join(projectRoot(), "src", "renderer", "index.html");
 }
 
+function rendererQuery(): Record<string, string> | undefined {
+  return shouldLogPerf() ? { perf: "1" } : undefined;
+}
+
 function preloadScript(): string {
   return join(projectRoot(), "src", "electron", "preload.cjs");
+}
+
+function runtimePluginScript(): string {
+  return join(projectRoot(), "runtime", "plugin", "jusi_neovim.lua");
 }
 
 function appIconCandidates(): string[] {
@@ -107,6 +115,66 @@ function shouldRunStartupDemo(): boolean {
   return processEnv().JUSI_STARTUP_DEMO === "1";
 }
 
+function shouldLogPerf(): boolean {
+  return processEnv().JUSI_PERF === "1";
+}
+
+function shouldUseElectronClipboard(): boolean {
+  const value = String(processEnv().JUSI_NVIM_CLIPBOARD ?? "").toLowerCase();
+  return value === "electron" || value === "1" || value === "true";
+}
+
+function clipboardTextFromRegister(lines: unknown, regtype: unknown): string {
+  const textLines = Array.isArray(lines)
+    ? lines.map((line) => String(line ?? ""))
+    : [String(lines ?? "")];
+  const text = textLines.join("\n");
+  return regtype === "V" ? `${text}\n` : text;
+}
+
+function registerFromClipboardText(text: string): { lines: string[]; regtype: string } {
+  return {
+    lines: text.split(/\r\n|\n|\r/),
+    regtype: "v",
+  };
+}
+
+function nowMs(): number {
+  const perf = (globalThis as unknown as { performance?: { now?: () => number } }).performance;
+  return perf?.now?.() ?? Date.now();
+}
+
+function perfLog(event: Record<string, unknown>): void {
+  if (!shouldLogPerf()) {
+    return;
+  }
+  console.log("[perf]", JSON.stringify({
+    t: Date.now(),
+    ...event,
+  }));
+}
+
+function stateMetrics(state: RendererSessionState): Record<string, number> {
+  return {
+    tabs: state.snapshot.tabs.length,
+    windows: state.snapshot.windows.length,
+    buffers: state.snapshot.buffers.length,
+    grids: state.grids.length,
+    attachedWebViews: state.attachedWebViews.length,
+    screenRows: state.screen.rows,
+    screenCols: state.screen.cols,
+    gridCells: state.grids.reduce((sum, grid) => sum + (grid.rows * grid.cols), 0),
+    highlightCount: Object.keys(state.screen.highlights).length,
+    screenRuns: state.screen.runs.reduce((sum, line) => sum + line.length, 0),
+    gridRuns: state.grids.reduce(
+      (sum, grid) => sum + grid.runs.reduce((gridSum, line) => gridSum + line.length, 0),
+      0,
+    ),
+    messageEntries: state.messages.entries.length,
+    cmdlineBlockLines: state.cmdline.blockLines.length,
+  };
+}
+
 function snapshotForRenderer(snapshot: UiSnapshot, debugUi: boolean): UiSnapshot {
   if (debugUi || snapshot.currentTabId === null) {
     return snapshot;
@@ -150,12 +218,12 @@ function isModifierOnlyKey(key: string): boolean {
   return key === "Shift" || key === "Control" || key === "Alt" || key === "Meta";
 }
 
-function isFullscreenToggleInput(input: { type?: string; key?: string; control?: boolean; meta?: boolean }): boolean {
+function isFullscreenToggleInput(input: { type?: string; key?: string; code?: string; control?: boolean; meta?: boolean }): boolean {
   if (input.type !== "keyDown") {
     return false;
   }
   const key = String(input.key ?? "");
-  return key === "F11" || (input.control === true && input.meta === true && key.toLowerCase() === "f");
+  return key === "F11" || (input.control === true && input.meta === true && isPhysicalKeyInput(input, "KeyF"));
 }
 
 function appZoomActionForInput(input: { type?: string; key?: string; code?: string; control?: boolean; meta?: boolean }): "in" | "out" | "reset" | null {
@@ -176,8 +244,8 @@ function appZoomActionForInput(input: { type?: string; key?: string; code?: stri
   return null;
 }
 
-function isWebviewReloadInput(input: { type?: string; key?: string; control?: boolean; meta?: boolean }): boolean {
-  return input.type === "keyDown" && (input.meta === true || input.control === true) && String(input.key ?? "").toLowerCase() === "r";
+function isWebviewReloadInput(input: { type?: string; code?: string; control?: boolean; meta?: boolean }): boolean {
+  return (input.meta === true || input.control === true) && isPhysicalKeyInput(input, "KeyR");
 }
 
 function toggleFullscreen(win: BrowserWindow): void {
@@ -243,6 +311,12 @@ async function createWindow(): Promise<void> {
       return;
     }
 
+    if (isCtrlAInput(input)) {
+      event.preventDefault();
+      void session.input("<C-A>");
+      return;
+    }
+
     if (shouldBlockShellAccelerator(input)) {
       event.preventDefault();
     }
@@ -259,7 +333,17 @@ async function createWindow(): Promise<void> {
     }
     const state = pendingState;
     pendingState = null;
-    win.webContents.send("jusi:state", toRendererState(state));
+    const startedAt = nowMs();
+    const rendererState = toRendererState(state);
+    const serializedBytes = shouldLogPerf() ? Buffer.byteLength(JSON.stringify(rendererState), "utf8") : 0;
+    const serializeMs = nowMs() - startedAt;
+    win.webContents.send("jusi:state", rendererState);
+    perfLog({
+      kind: "state",
+      serializeMs: Number(serializeMs.toFixed(2)),
+      bytes: serializedBytes,
+      ...stateMetrics(rendererState),
+    });
   };
   session.onStateChanged((state) => {
     pendingState = state;
@@ -297,10 +381,24 @@ async function createWindow(): Promise<void> {
       win.close();
     }
   });
+  if (shouldUseElectronClipboard()) {
+    session.onClipboardCopy((event) => {
+      clipboard.writeText(clipboardTextFromRegister(event.lines, event.regtype));
+    });
+    client.onRequest?.((request) => {
+      if (request.method !== "jusi:clipboard-paste") {
+        return undefined;
+      }
+      return registerFromClipboardText(clipboard.readText());
+    });
+  }
 
   const [contentWidth, contentHeight] = win.getContentSize();
   const grid = estimateGrid(contentWidth, contentHeight);
   await session.attachUi(grid.columns, grid.lines);
+  if (shouldUseElectronClipboard()) {
+    await session.installClipboardProvider(runtimePluginScript());
+  }
   const pendingWebviewWindowCommands = new WeakMap<object, ReturnType<typeof setTimeout>>();
   const pendingWebviewNormalModeCommands = new WeakMap<object, ReturnType<typeof setTimeout>>();
   const webContentsCreatedHandler = (_event: any, contents: any) => {
@@ -355,7 +453,7 @@ async function createWindow(): Promise<void> {
       if (pendingNormalTimeout) {
         clearTimeout(pendingNormalTimeout);
         pendingWebviewNormalModeCommands.delete(contents);
-        if (input.control && key.toLowerCase() === "n") {
+        if (input.control && isPhysicalKeyInput(input, "KeyN")) {
           event.preventDefault();
           leaveWebMode();
           return;
@@ -371,20 +469,20 @@ async function createWindow(): Promise<void> {
         return;
       }
 
-      if (input.control && key.toLowerCase() === "j") {
+      if (input.control && isPhysicalKeyInput(input, "KeyJ")) {
         event.preventDefault();
         win.webContents.send("jusi:web-open-active-link");
         return;
       }
 
-      if (input.control && key.toLowerCase() === "l") {
+      if (input.control && isPhysicalKeyInput(input, "KeyL")) {
         event.preventDefault();
         const url = typeof contents.getURL === "function" ? contents.getURL() : "";
         void session.setRegister("*", url);
         return;
       }
 
-      if (input.control && key.toLowerCase() === "o") {
+      if (input.control && isPhysicalKeyInput(input, "KeyO")) {
         event.preventDefault();
         if (typeof contents.canGoBack !== "function" || contents.canGoBack()) {
           contents.goBack?.();
@@ -392,7 +490,7 @@ async function createWindow(): Promise<void> {
         return;
       }
 
-      if (input.control && (key.toLowerCase() === "i" || key === "Tab")) {
+      if (input.control && (isPhysicalKeyInput(input, "KeyI") || key === "Tab")) {
         event.preventDefault();
         if (typeof contents.canGoForward !== "function" || contents.canGoForward()) {
           contents.goForward?.();
@@ -409,7 +507,7 @@ async function createWindow(): Promise<void> {
         pendingWebviewWindowCommands.delete(contents);
       }
 
-      if (input.control && key.toLowerCase() === "w") {
+      if (input.control && isPhysicalKeyInput(input, "KeyW")) {
         if (pendingTimeout) {
           event.preventDefault();
           void session.command("wincmd w").finally(leaveWebMode);
@@ -495,6 +593,13 @@ async function createWindow(): Promise<void> {
     await session.updateWebMirror(Number(bufferId), mirror as MirrorDocument);
   });
 
+  ipcMain.on("jusi:perf", (_event: unknown, event: unknown) => {
+    if (!shouldLogPerf() || typeof event !== "object" || event === null) {
+      return;
+    }
+    perfLog(event as Record<string, unknown>);
+  });
+
   win.on("closed", async () => {
     ipcMain.removeHandler("jusi:get-initial-state");
     ipcMain.removeHandler("jusi:input");
@@ -504,12 +609,15 @@ async function createWindow(): Promise<void> {
     ipcMain.removeHandler("jusi:focus-window");
     ipcMain.removeHandler("jusi:set-cursor");
     ipcMain.removeHandler("jusi:update-web-mirror");
+    ipcMain.removeAllListeners("jusi:perf");
     if (!neovimExited) {
       await session.dispose();
     }
   });
 
-  await win.loadFile(rendererHtml());
+  await win.loadFile(rendererHtml(), {
+    query: rendererQuery(),
+  });
   const diagnostics = await win.webContents.executeJavaScript(`
     ({
       hasJusi: typeof window.jusi !== "undefined",

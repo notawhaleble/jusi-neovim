@@ -76,6 +76,20 @@ export class NvimLayoutController {
     return this.visibleSnapshot(this.uiState.getSnapshot());
   }
 
+  getVisibleGridIds(): Set<number> {
+    const gridIds = new Set<number>();
+    const snapshot = this.getVisibleSnapshot();
+    for (const window of snapshot.windows) {
+      if (typeof window.gridId === "number") {
+        gridIds.add(window.gridId);
+      }
+      if (typeof window.gridBounds?.gridId === "number") {
+        gridIds.add(window.gridBounds.gridId);
+      }
+    }
+    return gridIds;
+  }
+
   getAttachedWebViews(): AttachedWebView[] {
     const snapshot = this.uiState.getSnapshot();
     const windowsById = new Map<number, WindowRef>();

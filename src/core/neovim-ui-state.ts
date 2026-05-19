@@ -16,6 +16,11 @@ export class NeovimUiState {
 
   removeTab(tabId: number): void {
     this.tabs.delete(tabId);
+    for (const window of this.windows.values()) {
+      if (window.tabId === tabId) {
+        this.windows.delete(window.id);
+      }
+    }
     if (this.currentTabId === tabId) {
       this.currentTabId = null;
     }

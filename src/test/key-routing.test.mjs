@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { isTabKey, isWindowCommandFollower, shouldBlockShellAccelerator } from "../../dist/electron/key-routing.js";
+import { isCtrlAInput, isPhysicalKeyInput, isTabKey, isWindowCommandFollower, shouldBlockShellAccelerator } from "../../dist/electron/key-routing.js";
 
 function testWindowCommandFollowersAcceptSingleKeyWincmdTargets() {
   for (const key of ["h", "j", "k", "l", "H", "J", "K", "L", "w", "W", ">", "<", "+", "-", "=", "|", "_", "T", "r", "R", "x", "s", "v", "q", "o", "t", "b", "p", "P"]) {
@@ -15,6 +15,17 @@ function testTabIsReserved() {
   assert.equal(isTabKey("t"), false);
 }
 
+function testCtrlARoutesToNeovim() {
+  assert.equal(isPhysicalKeyInput({ type: "keyDown", code: "KeyA" }, "KeyA"), true);
+  assert.equal(isPhysicalKeyInput({ type: "keyDown", key: "a" }, "KeyA"), false);
+  assert.equal(isCtrlAInput({ type: "keyDown", control: true, code: "KeyA" }), true);
+  assert.equal(isCtrlAInput({ type: "keyDown", control: true, code: "KeyQ" }), false);
+  assert.equal(isCtrlAInput({ type: "keyUp", control: true, code: "KeyA" }), false);
+  assert.equal(isCtrlAInput({ type: "keyDown", meta: true, control: true, code: "KeyA" }), false);
+  assert.equal(isCtrlAInput({ type: "keyDown", alt: true, control: true, code: "KeyA" }), false);
+  assert.equal(isCtrlAInput({ type: "keyDown", control: true }), false);
+}
+
 function testShellAcceleratorsAreBlockedConservatively() {
   assert.equal(shouldBlockShellAccelerator({ meta: true, key: "w" }), true);
   assert.equal(shouldBlockShellAccelerator({ meta: true, key: "q" }), true);
@@ -25,6 +36,7 @@ function testShellAcceleratorsAreBlockedConservatively() {
 
 testWindowCommandFollowersAcceptSingleKeyWincmdTargets();
 testTabIsReserved();
+testCtrlARoutesToNeovim();
 testShellAcceleratorsAreBlockedConservatively();
 
 console.log("key-routing tests passed");

@@ -8,6 +8,7 @@ import { RawNotification } from "./notification-router.js";
 import { buildNvimLaunchSpec, NvimLaunchSpec, NvimSpawnOptions } from "./spawn-config.js";
 
 type NotificationHandler = (notification: RawNotification) => void;
+type RequestHandler = (request: RawNotification) => unknown;
 type ExitHandler = () => void;
 
 type PromisedAttach = (writer: any, reader: any) => Promise<any>;
@@ -63,6 +64,7 @@ export function buildEmbeddedLaunchSpec(options: NvimSpawnOptions = {}): NvimLau
 
 export class PromisedNvimRpcClient implements NvimRpcClient {
   private readonly listeners = new Set<NotificationHandler>();
+  private readonly requestListeners = new Set<RequestHandler>();
   private readonly exitListeners = new Set<ExitHandler>();
   private nvim: any | null = null;
   private proc: any | null = null;
@@ -76,6 +78,10 @@ export class PromisedNvimRpcClient implements NvimRpcClient {
 
   onNotification(listener: NotificationHandler): void {
     this.listeners.add(listener);
+  }
+
+  onRequest(listener: RequestHandler): void {
+    this.requestListeners.add(listener);
   }
 
   onExit(listener: ExitHandler): void {
@@ -132,6 +138,7 @@ export class PromisedNvimRpcClient implements NvimRpcClient {
     this.nvim = null;
     this.proc = null;
     this.listeners.clear();
+    this.requestListeners.clear();
     this.exitListeners.clear();
   }
 
@@ -188,12 +195,27 @@ export class PromisedNvimRpcClient implements NvimRpcClient {
       }
       this.emitNotification({ method, args });
     });
+
+    this.nvim.on("request", (method: string, args: unknown[], response: { send: (result: unknown) => void }) => {
+      const result = this.handleRequest({ method, args });
+      response.send(result);
+    });
   }
 
   private emitNotification(notification: RawNotification): void {
     for (const listener of this.listeners) {
       listener(notification);
     }
+  }
+
+  private handleRequest(request: RawNotification): unknown {
+    for (const listener of this.requestListeners) {
+      const result = listener(request);
+      if (result !== undefined) {
+        return result;
+      }
+    }
+    return null;
   }
 
   private emitExit(): void {

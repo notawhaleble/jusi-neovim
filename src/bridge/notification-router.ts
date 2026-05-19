@@ -80,8 +80,8 @@ export class NvimNotificationRouter {
     return this.screen.getState();
   }
 
-  getGridStates(): GridScreenState[] {
-    return this.screen.getGridStates();
+  getGridStates(gridIds?: Set<number>): GridScreenState[] {
+    return gridIds ? this.screen.getGridStatesFor(gridIds) : this.screen.getGridStates();
   }
 
   getCmdlineState(): CmdlineState {

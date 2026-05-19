@@ -20,6 +20,11 @@ export interface RendererSessionState {
   messages: MessageState;
 }
 
+export interface PerfEvent {
+  kind: string;
+  [key: string]: string | number | boolean | null;
+}
+
 export interface RendererApi {
   getInitialState(): Promise<RendererSessionState>;
   onStateChanged(listener: (state: RendererSessionState) => void): void;
@@ -37,4 +42,5 @@ export interface RendererApi {
   focusWindow(windowId: number): Promise<void>;
   setCursor(windowId: number, row: number, col: number): Promise<void>;
   updateWebMirror(bufferId: number, mirror: MirrorDocument): Promise<void>;
+  logPerf(event: PerfEvent): void;
 }

@@ -50,6 +50,12 @@ export class NvimScreenState {
             this.clearGrid(gridId);
           }
           break;
+        case "grid_destroy":
+          for (const payload of payloads) {
+            const gridId = Array.isArray(payload) ? this.asNumber(payload[0]) : this.asNumber(payload);
+            this.deleteGrid(gridId);
+          }
+          break;
         case "grid_line":
           for (const payload of payloads) {
             if (!Array.isArray(payload) || payload.length < 4) {
@@ -162,6 +168,29 @@ export class NvimScreenState {
     return states;
   }
 
+  getGridStatesFor(gridIds: Set<number>, includeCells = false): GridScreenState[] {
+    const states: GridScreenState[] = [];
+    for (const gridId of gridIds) {
+      const state = this.grid.get(gridId);
+      if (!state) {
+        continue;
+      }
+      const gridState: GridScreenState = {
+        gridId,
+        rows: state.rows,
+        cols: state.cols,
+        lines: state.cells.map((line) => this.cellsToLine(line, state.cols)),
+        runs: state.cells.map((line) => this.cellsToRuns(line, state.cols)),
+        cursor: this.cursor?.gridId === gridId ? this.cursor : null,
+      };
+      if (includeCells) {
+        gridState.cells = state.cells.map((line) => this.padCells(line, state.cols));
+      }
+      states.push(gridState);
+    }
+    return states;
+  }
+
   private resizeGrid(gridId: number, cols: number, rows: number): void {
     const normalizedCols = Math.max(0, cols);
     const normalizedRows = Math.max(0, rows);
@@ -190,6 +219,13 @@ export class NvimScreenState {
       ...state,
       cells,
     });
+  }
+
+  private deleteGrid(gridId: number): void {
+    this.grid.delete(gridId);
+    if (this.cursor?.gridId === gridId) {
+      this.cursor = null;
+    }
   }
 
   private applyGridLine(gridId: number, row: number, colStart: number, defs: unknown[]): void {

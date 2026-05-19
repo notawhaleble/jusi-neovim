@@ -96,6 +96,7 @@ export class NeovimUiAdapter {
         break;
       case "buffer-close":
         this.uiState.removeBuffer(event.bufferId);
+        this.webBuffers.unregisterBuffer(event.bufferId);
         break;
       case "window":
         this.uiState.upsertWindow({

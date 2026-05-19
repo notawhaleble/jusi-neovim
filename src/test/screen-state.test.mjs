@@ -163,6 +163,30 @@ function testGridScrollPreservesHighlightIds() {
   ]);
 }
 
+function testGridCloseRemovesStaleGridState() {
+  const screen = new NvimScreenState();
+  screen.handleRedraw([
+    ["grid_resize", [2, 4, 1]],
+    ["grid_line", [2, 0, 0, [["gone"]]]],
+    ["grid_cursor_goto", [2, 0, 1]],
+    ["grid_destroy", [2]],
+  ]);
+
+  assert.equal(screen.getGridStates().some((entry) => entry.gridId === 2), false);
+  assert.equal(screen.getGridStatesFor(new Set([2])).length, 0);
+}
+
+function testWinHideKeepsGridContentForTabReturn() {
+  const screen = new NvimScreenState();
+  screen.handleRedraw([
+    ["grid_resize", [2, 4, 1]],
+    ["grid_line", [2, 0, 0, [["keep"]]]],
+    ["win_hide", [2]],
+  ]);
+
+  assert.equal(screen.getGridStatesFor(new Set([2]))[0]?.lines[0], "keep");
+}
+
 testGridScrollMovesCellsUp();
 testGridScrollMovesCellsDown();
 testGridLineWritesTextAfterLeadingSpace();
@@ -171,5 +195,7 @@ testGridLineIgnoresZeroRepeatCells();
 testDefaultColorsUseLastPayloadInBatch();
 testModeCursorStyleTracksModeChange();
 testGridScrollPreservesHighlightIds();
+testGridCloseRemovesStaleGridState();
+testWinHideKeepsGridContentForTabReturn();
 
 console.log("screen-state tests passed");

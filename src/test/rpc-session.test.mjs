@@ -17,6 +17,9 @@ class FakeClient {
 
   async request(method, args = []) {
     this.requests.push({ method, args });
+    if (method === "nvim_get_api_info") {
+      return [7, {}];
+    }
     return null;
   }
 
@@ -153,6 +156,35 @@ async function testSetRegisterUsesNvimFunction() {
   });
 }
 
+async function testInstallClipboardProviderUsesLuaBridge() {
+  const client = new FakeClient();
+  const session = new EmbeddedNvimSession(client);
+
+  await session.installClipboardProvider();
+
+  assert.equal(client.requests[0].method, "nvim_get_api_info");
+  assert.equal(client.requests[1].method, "nvim_exec_lua");
+  assert.deepEqual(client.requests[1].args[1], ["", 7]);
+  assert.match(client.requests[1].args[0], /jusi_neovim_install_clipboard_provider/);
+}
+
+async function testClipboardCopyNotificationIsForwarded() {
+  const client = new FakeClient();
+  const session = new EmbeddedNvimSession(client);
+  let emitted = null;
+  session.onClipboardCopy((event) => {
+    emitted = event;
+  });
+
+  session.start();
+  client.listener({
+    method: "jusi:clipboard-copy",
+    args: [{ register: "*", lines: ["hello", "world"], regtype: "V" }],
+  });
+
+  assert.deepEqual(emitted, { register: "*", lines: ["hello", "world"], regtype: "V" });
+}
+
 async function testExitNotificationIsForwarded() {
   const client = new FakeClient();
   const session = new EmbeddedNvimSession(client);
@@ -176,6 +208,8 @@ await testWebOpenLinkNotificationIsForwarded();
 await testWebEnterModeNotificationIsForwarded();
 await testSetCursorUsesLuaBridge();
 await testSetRegisterUsesNvimFunction();
+await testInstallClipboardProviderUsesLuaBridge();
+await testClipboardCopyNotificationIsForwarded();
 await testExitNotificationIsForwarded();
 
 console.log("rpc-session tests passed");

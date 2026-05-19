@@ -65,4 +65,7 @@ contextBridge.exposeInMainWorld("jusi", {
   async updateWebMirror(bufferId, mirror) {
     await ipcRenderer.invoke("jusi:update-web-mirror", bufferId, mirror);
   },
+  logPerf(event) {
+    ipcRenderer.send("jusi:perf", event);
+  },
 });

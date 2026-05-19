@@ -11,6 +11,61 @@ local function notify(method, payload)
   pcall(vim.rpcnotify, 0, method, payload)
 end
 
+local function notify_clipboard_copy(register, lines, regtype)
+  notify("jusi:clipboard-copy", {
+    register = register,
+    lines = lines,
+    regtype = regtype,
+  })
+end
+
+local function request_clipboard_paste(register)
+  local channel = tonumber(vim.g.jusi_neovim_rpc_channel) or 0
+  local ok, result = pcall(vim.rpcrequest, channel, "jusi:clipboard-paste", {
+    register = register,
+  })
+  if not ok or type(result) ~= "table" then
+    return { { "" }, "v" }
+  end
+
+  local lines = result.lines
+  if type(lines) ~= "table" then
+    lines = { "" }
+  end
+
+  local regtype = result.regtype
+  if type(regtype) ~= "string" or regtype == "" then
+    regtype = "v"
+  end
+
+  return { lines, regtype }
+end
+
+function M.install_clipboard_provider(channel)
+  if tonumber(channel) then
+    vim.g.jusi_neovim_rpc_channel = tonumber(channel)
+  end
+  vim.g.clipboard = {
+    name = "jusi-neovim",
+    copy = {
+      ["+"] = function(lines, regtype)
+        notify_clipboard_copy("+", lines, regtype)
+      end,
+      ["*"] = function(lines, regtype)
+        notify_clipboard_copy("*", lines, regtype)
+      end,
+    },
+    paste = {
+      ["+"] = function()
+        return request_clipboard_paste("+")
+      end,
+      ["*"] = function()
+        return request_clipboard_paste("*")
+      end,
+    },
+  }
+end
+
 local function buffer_kind(bufnr)
   local value = vim.b[bufnr].jusi_buffer_kind
   if value == "web" then
@@ -435,6 +490,10 @@ end
 
 _G.jusi_neovim_notify_visible_snapshot = function()
   notify_visible_windows()
+end
+
+_G.jusi_neovim_install_clipboard_provider = function()
+  M.install_clipboard_provider(vim.g.jusi_neovim_rpc_channel)
 end
 
 return M

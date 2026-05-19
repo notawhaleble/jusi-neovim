@@ -67,6 +67,9 @@ const api: RendererApi = {
   async updateWebMirror(bufferId, mirror): Promise<void> {
     await ipcRenderer.invoke("jusi:update-web-mirror", bufferId, mirror);
   },
+  logPerf(event): void {
+    ipcRenderer.send("jusi:perf", event);
+  },
 };
 
 contextBridge.exposeInMainWorld("jusi", api);

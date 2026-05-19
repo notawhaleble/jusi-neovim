@@ -67,8 +67,17 @@ function testPrefersExistingVisibleWindowWhenWindowListRefreshes() {
   assert.equal(registry.getSession(10)?.attachedWindowId, 100);
 }
 
+function testBufferCloseRemovesWebSession() {
+  const { adapter, registry } = buildHarness();
+
+  adapter.apply({ type: "buffer-close", bufferId: 10 });
+
+  assert.equal(registry.getSession(10), undefined);
+}
+
 testAttachesWebBufferOnlyInActiveTab();
 testDetachesWhenBufferIsNotVisibleInCurrentTab();
 testPrefersExistingVisibleWindowWhenWindowListRefreshes();
+testBufferCloseRemovesWebSession();
 
 console.log("web-buffer-registry tests passed");
