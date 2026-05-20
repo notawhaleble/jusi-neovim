@@ -175,6 +175,8 @@ Known gaps:
 Handled:
 
 - `:JusiWebBuffer {url}` marks the current buffer as a web buffer.
+- `file:///path/to/file-or-dir` URLs are normalized before loading, with directories rendered through an internal listing page.
+- Markdown files opened through the local-file viewer render as HTML instead of plain `<pre>` text.
 - One persistent `webview` host is kept per web buffer.
 - A web buffer attaches only to one visible window in the active tab.
 - Hidden web sessions are parked instead of destroyed.

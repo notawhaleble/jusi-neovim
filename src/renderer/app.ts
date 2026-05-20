@@ -918,9 +918,6 @@ function ensureViewHost(view: AttachedWebView): HTMLDivElement {
   browser.addEventListener("did-finish-load", () => {
     scheduleMirrorRefresh(host);
   });
-  browser.addEventListener("focus", () => {
-    setWebMode(view.bufferId);
-  });
   browser.addEventListener("mousedown", (event) => {
     setWebMode(view.bufferId);
     void moveMirrorCursorToClick(host, event as MouseEvent);
@@ -2089,6 +2086,7 @@ async function handleWebOpenLink(event: { bufferId: number; windowId: number }):
   if (!line) {
     return;
   }
+  const shouldReturnFocus = webModeBufferId === null;
   const index = line.startIndex + Math.max(0, Math.min(view.cursor.col, line.text.length));
   try {
     const target = await executableBrowser.executeJavaScript(mirrorLinkTargetSource(index)) as { href?: string | null } | null;
@@ -2101,9 +2099,17 @@ async function handleWebOpenLink(event: { bufferId: number; windowId: number }):
     const href = typeof target.href === "string" ? target.href : "";
     if (href !== "" && !href.toLowerCase().startsWith("javascript:") && typeof navigationBrowser.loadURL === "function") {
       navigationBrowser.loadURL(href);
+      if (shouldReturnFocus) {
+        setTimeout(focusHostSurface, 0);
+        setTimeout(focusHostSurface, 100);
+      }
       return;
     }
     await executableBrowser.executeJavaScript(mirrorActivateLinkSource(index));
+    if (shouldReturnFocus) {
+      setTimeout(focusHostSurface, 0);
+      setTimeout(focusHostSurface, 100);
+    }
   } catch (_error) {
     return;
   }

@@ -9,6 +9,7 @@ import {
 } from "../core/types.js";
 import { WebBufferRegistry } from "../core/web-buffer-registry.js";
 import { NvimGeometryEvent, NvimMetadataEvent } from "./protocol.js";
+import { normalizeWebSessionUrl } from "./web-url-normalizer.js";
 
 export class NvimLayoutController {
   private readonly uiState = new NeovimUiState();
@@ -23,7 +24,7 @@ export class NvimLayoutController {
     if (event.type === "web-session") {
       this.webBuffers.registerSession({
         bufferId: event.bufferId,
-        url: event.url,
+        url: normalizeWebSessionUrl(event.url),
         title: event.title,
       });
       return this.uiState.getSnapshot();
