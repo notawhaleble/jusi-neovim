@@ -1,3 +1,4 @@
+import { decodeHighlightAttrs } from "./highlight-attrs.js";
 import { CursorShape, CursorStyle, GridScreenState, HighlightAttrs, PrimaryScreenState, ScreenCell, ScreenLineRun } from "../core/types.js";
 
 function colorNumberToCss(value: number | null | undefined): string | undefined {
@@ -13,6 +14,9 @@ export class NvimScreenState {
   private cursor: PrimaryScreenState["cursor"] = null;
   private currentModeName = "normal";
   private currentModeIndex = 0;
+  private readonly options = new Map<string, boolean | number | string>();
+  private busy = false;
+  private cursorStyleEnabled = true;
   private modeStyles: CursorStyle[] = [];
   private foregroundColor: string | undefined;
   private backgroundColor: string | undefined;
@@ -27,12 +31,21 @@ export class NvimScreenState {
       const payloads = rawEvent.slice(1);
 
       switch (name) {
+        case "option_set":
+          for (const payload of payloads) {
+            if (!Array.isArray(payload) || payload.length < 2) continue;
+            const [key, value] = payload;
+            if (typeof key !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(key)) continue;
+            if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))
+              || (typeof value === 'string' && value.length <= 4096)) this.options.set(key, value);
+          }
+          break;
         case "hl_attr_define":
           for (const payload of payloads) {
             if (!Array.isArray(payload) || payload.length < 2) {
               continue;
             }
-            this.highlights.set(this.asNumber(payload[0]), this.decodeHighlightAttrs(payload[1]));
+            this.highlights.set(this.asNumber(payload[0]), decodeHighlightAttrs(payload[1]));
           }
           break;
         case "grid_resize":
@@ -97,11 +110,18 @@ export class NvimScreenState {
             };
           }
           break;
+        case "busy_start":
+          this.busy = true;
+          break;
+        case "busy_stop":
+          this.busy = false;
+          break;
         case "mode_info_set":
           for (const payload of payloads) {
             if (!Array.isArray(payload) || payload.length < 2 || !Array.isArray(payload[1])) {
               continue;
             }
+            this.cursorStyleEnabled = payload[0] === true;
             this.modeStyles = payload[1].map((entry) => this.decodeCursorStyle(entry));
           }
           break;
@@ -133,6 +153,12 @@ export class NvimScreenState {
     const primaryGrid = this.grid.get(1);
     const primary = primaryGrid?.cells ?? [];
     const state: PrimaryScreenState = {
+      options: Object.fromEntries(this.options),
+      unsupportedUiOptions: Object.entries({ext_linegrid:true,ext_multigrid:true,ext_cmdline:true,
+        ext_popupmenu:true,ext_messages:true,ext_tabline:false,ext_wildmenu:false})
+        .filter(([name,expected]) => this.options.has(name) && this.options.get(name) !== expected)
+        .map(([name]) => name),
+      busy: this.busy,
       rows: primaryGrid?.rows ?? 0,
       cols: primaryGrid?.cols ?? 0,
       lines: primary.map((line) => this.cellsToLine(line, primaryGrid?.cols ?? 0)),
@@ -248,15 +274,10 @@ export class NvimScreenState {
         activeHighlightId = this.asNumber(def[1]);
       }
       const repeat = def.length >= 3 ? Math.max(0, this.asNumber(def[2])) : 1;
-      for (let idx = 0; idx < repeat; idx += 1) {
-        const cells = text.length === 0 ? [" "] : [...text];
-        for (const cellText of cells) {
-          if (col >= state.cols) {
-            break;
-          }
-          current[col] = { text: cellText, highlightId: activeHighlightId };
-          col += 1;
-        }
+      for (let idx = 0; idx < repeat && col < state.cols; idx += 1) {
+        // One protocol item is one cell, even when it contains combining code
+        // points. Empty text is Neovim's wide-character continuation cell.
+        current[col++] = { text, highlightId: activeHighlightId };
       }
     }
 
@@ -315,28 +336,12 @@ export class NvimScreenState {
     });
   }
 
-  private decodeHighlightAttrs(value: unknown): HighlightAttrs {
-    if (!this.isObject(value)) {
-      return {};
-    }
-
-    return {
-      foreground: colorNumberToCss(this.asOptionalNumber(value.foreground ?? value.fg)),
-      background: colorNumberToCss(this.asOptionalNumber(value.background ?? value.bg)),
-      special: colorNumberToCss(this.asOptionalNumber(value.special ?? value.sp)),
-      bold: value.bold === true ? true : undefined,
-      italic: value.italic === true ? true : undefined,
-      underline: value.underline === true ? true : undefined,
-      undercurl: value.undercurl === true ? true : undefined,
-      reverse: value.reverse === true ? true : undefined,
-    };
-  }
 
   private modeState(): PrimaryScreenState["mode"] {
     return {
       name: this.currentModeName,
       index: this.currentModeIndex,
-      cursor: this.modeStyles[this.currentModeIndex] ?? this.defaultCursorStyle(),
+      cursor: (this.cursorStyleEnabled ? this.modeStyles[this.currentModeIndex] : undefined) ?? this.defaultCursorStyle(),
     };
   }
 
@@ -397,12 +402,18 @@ export class NvimScreenState {
     const runs: ScreenLineRun[] = [];
     for (let col = 0; col < cols; col += 1) {
       const cell = cells[col] ?? this.blankCell();
+      const columns = cell.text !== '' && cells[col + 1]?.text === '' ? 2 : 1;
+      const text = cell.text || ' ';
+      const ascii = /^[\x20-\x7e]+$/.test(text) && columns === 1;
       const previous = runs[runs.length - 1];
-      if (previous && previous.highlightId === cell.highlightId) {
-        previous.text += cell.text;
+      if (ascii && previous && previous.highlightId === cell.highlightId
+        && /^[\x20-\x7e]+$/.test(previous.text) && previous.columns === previous.text.length) {
+        previous.text += text;
+        previous.columns! += columns;
       } else {
-        runs.push({ text: cell.text, highlightId: cell.highlightId });
+        runs.push({ text, highlightId: cell.highlightId, columns });
       }
+      col += columns - 1;
     }
     return runs;
   }

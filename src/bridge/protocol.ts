@@ -1,4 +1,4 @@
-import { BufferKind, GridBounds, MirrorDocument } from "../core/types.js";
+import { BufferSelectionRange, BufferKind, GridBounds, MirrorDocument } from "../core/types.js";
 
 export type NvimMetadataEvent =
   | {
@@ -34,17 +34,7 @@ export type NvimMetadataEvent =
         row: number;
         col: number;
       };
-      selection?: {
-        start: {
-          row: number;
-          col: number;
-        };
-        end: {
-          row: number;
-          col: number;
-        };
-        linewise?: boolean;
-      };
+      selection?: BufferSelectionRange;
       row?: number;
       col?: number;
       width?: number;
@@ -61,6 +51,13 @@ export type NvimMetadataEvent =
     }
   | {
       type: "web-session";
+      nativeChild?: string;
+      incarnation?: number;
+      providerId?: string;
+      textLayer?: "auto" | "off";
+      textSource?: "dom" | "worker";
+      profile?: string;
+      privateBrowsing?: boolean;
       bufferId: number;
       url: string;
       title?: string;

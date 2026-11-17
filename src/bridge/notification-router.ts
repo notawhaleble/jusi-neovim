@@ -1,4 +1,6 @@
 import {
+  BufferSelectionRange,
+  SelectionSpan,
   CmdlineState,
   GridScreenState,
   MessageState,
@@ -32,12 +34,20 @@ export class NvimNotificationRouter {
   private readonly screen = new NvimScreenState();
   private readonly overlays = new NvimOverlayState();
 
-  constructor(private readonly layout: NvimLayoutController) {}
+  private framePending = false;
+
+  constructor(
+    private readonly layout: NvimLayoutController,
+    private readonly onFlush: () => void = () => {},
+  ) {}
+
+  get hasPendingFrame(): boolean { return this.framePending; }
+
 
   handle(notification: RawNotification): boolean {
     switch (notification.method) {
       case "redraw":
-        this.handleRedraw(notification.args);
+        this.handleRedrawFrame(notification.args);
         return true;
       case "jusi:layout":
         this.handleLayout(notification.args[0]);
@@ -64,6 +74,24 @@ export class NvimNotificationRouter {
       messages: this.overlays.getMessages(),
       handled,
     };
+  }
+
+  private handleRedrawFrame(args: unknown[]): void {
+    let batch: unknown[] = [];
+    for (const event of args) {
+      if (!Array.isArray(event) || typeof event[0] !== "string") continue;
+      if (event[0] === "flush") {
+        this.handleRedraw(batch);
+        batch = [];
+        this.framePending = false;
+        this.onFlush();
+      } else {
+        this.framePending = true;
+        batch.push(event);
+      }
+    }
+    // Working state advances in protocol order. Only onFlush may publish it.
+    this.handleRedraw(batch);
   }
 
   private handleRedraw(args: unknown[]): void {
@@ -112,6 +140,13 @@ export class NvimNotificationRouter {
       type: "web-session",
       bufferId: payload.bufferId,
       url: payload.url,
+      nativeChild: typeof payload.nativeChild === "string" ? payload.nativeChild : undefined,
+      incarnation: Number.isSafeInteger(payload.incarnation) ? payload.incarnation : undefined,
+      providerId: typeof payload.providerId === "string" ? payload.providerId : "web",
+      textSource: payload.textSource === "worker" ? "worker" : "dom",
+      textLayer: payload.textLayer === "off" ? "off" : "auto",
+      privateBrowsing: payload.privateBrowsing === true,
+      profile: typeof payload.profile === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(payload.profile) ? payload.profile : "default",
       title: typeof payload.title === "string" ? payload.title : undefined,
     });
   }
@@ -301,11 +336,7 @@ export class NvimNotificationRouter {
     };
   }
 
-  private asSelection(value: unknown): {
-    start: { row: number; col: number };
-    end: { row: number; col: number };
-    linewise?: boolean;
-  } | undefined {
+  private asSelection(value: unknown): BufferSelectionRange | undefined {
     if (!this.isObject(value)) {
       return undefined;
     }
@@ -314,10 +345,23 @@ export class NvimNotificationRouter {
     if (!start || !end) {
       return undefined;
     }
+    let spans: SelectionSpan[] | undefined;
+    if (value.spans !== undefined) {
+      if (!Array.isArray(value.spans) || value.spans.length > 10000) return undefined;
+      spans = [];
+      for (const span of value.spans) {
+        if (!this.isObject(span)) return undefined;
+        const { row, startCol, endCol } = span;
+        if (![row, startCol, endCol].every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)
+          || endCol < startCol) return undefined;
+        spans.push({ row, startCol, endCol });
+      }
+    }
     return {
       start,
       end,
       linewise: value.linewise === true,
+      spans,
     };
   }
 

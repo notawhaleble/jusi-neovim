@@ -1,0 +1,76 @@
+import assert from 'node:assert/strict';
+import {EmbeddedNvimSession} from '../../dist/bridge/rpc-session.js';
+import {NativeViewportExchange} from '../../dist/electron/native-viewport.js';
+const tick = () => new Promise(resolve => setTimeout(resolve, 10));
+const client = {onNotification(fn){this.notify=fn},onExit(fn){this.exit=fn},async request(){},async dispose(){}};
+const session = new EmbeddedNvimSession(client);
+const frames=[];
+const viewport=new NativeViewportExchange(()=>{});
+session.onStateChanged(state=>{viewport.invalidate();frames.push(state)});
+session.start();
+const redraw=(...args)=>client.notify({method:'redraw',args});
+const layout=event=>client.notify({method:'jusi:layout',args:[event]});
+layout({type:'current-tab',tabId:1});
+layout({type:'tab',tabId:1,currentWindowId:1000});
+layout({type:'buffer',bufferId:3,kind:'web'});
+layout({type:'window',windowId:1000,tabId:1,bufferId:3,row:0,col:0,width:10,height:3});
+client.notify({method:'jusi:web-session',args:[{bufferId:3,incarnation:1,url:'https://example.com'}]});
+const ticket={bufferId:3,sessionId:session.getWebSession(3).sessionId,incarnation:1,revision:1};
+client.notify({method:'jusi:web-mirror',args:[{bufferId:3,mirror:{version:1,totalTextLength:5,lines:[{lineNumber:0,text:'hello',startIndex:0,endIndex:5,spans:[]}]}}]});
+redraw(['grid_resize',[1,10,3]],['grid_resize',[2,10,3]],['win_pos',[2,1000,0,0,10,3]],['grid_line',[1,0,0,[["o"], ["l"], ["d"]]]],['flush',[]]);
+await tick();
+assert.equal(frames.length,1);
+const before=session.getPresentationState();
+const saved=JSON.stringify(before);
+const report={generation:viewport.generation,sequence:1,x:0,y:0,width:100,height:60,cellWidth:10,cellHeight:20,blocked:false};
+assert.equal(viewport.accept(report,1,100,60),true);
+// No timer, metadata notification, or provider publish may leak a partial frame.
+redraw(['option_set',['linespace',7]],['busy_start',[]],['grid_line',[1,0,0,[["n"], ["e"], ["w"]]]],['hl_attr_define',[99,{background:0xff0000},{}]],
+ ['cmdline_show',[[[0,'pending']],0,':','',0,1]],['msg_show',['echo',[[0,'pending message']],false,false]],
+ ['win_pos',[2,1000,1,0,10,2]]);
+layout({type:'window',windowId:1000,tabId:1,bufferId:3,row:1,col:0,width:10,height:2,cursor:{row:2,col:3}});
+session.setBrowserAutoRefresh(3,false);
+assert.deepEqual(session.getInteractionView(1000,ticket).cursor,{row:2,col:3});
+assert.equal(session.getInteractionView(1001,ticket),undefined);
+assert.equal(session.getInteractionView(1000,{...ticket,revision:2}),undefined);
+assert.equal(session.getInteractionView(1000,{...ticket,sessionId:'stale'}),undefined);
+assert.notDeepEqual(before.attachedWebViews[0].cursor,{row:2,col:3},'live reads do not mutate published cursor');
+await tick();
+assert.equal(frames.length,1);
+assert.equal(session.getPresentationState(),before);
+assert.equal(JSON.stringify(before),saved,'published snapshots must not mutate');
+assert.equal(viewport.generation,report.generation,'no partial native layout epoch');
+// Ownership invalidation cannot be delayed with presentation publication.
+layout({type:'buffer-close',bufferId:3});
+assert.equal(session.getWebSession(3),undefined);
+assert.equal(session.getInteractionView(1000,ticket),undefined);
+assert.equal(session.getSnapshot().buffers.some(b=>b.id===3),false);
+await tick();assert.equal(frames.length,1);
+redraw(['grid_line',[1,1,0,[["d"], ["o"], ["n"], ["e"]]]],['flush',[]]);
+await tick();
+assert.equal(frames.length,2);
+assert.ok(frames[1].screen.lines[0].startsWith('new'));
+assert.ok(frames[1].screen.lines[1].startsWith('done'));
+assert.equal(frames[1].screen.highlights[99].background,'#ff0000');
+assert.equal(frames[1].cmdline.content,'pending');
+assert.equal(frames[1].screen.busy,true);
+assert.equal(frames[1].screen.options.linespace,7);
+assert.equal(before.screen.options.linespace,undefined);
+assert.equal(before.screen.busy,false);
+assert.equal(frames[1].messages.entries.at(-1).text,'pending message');
+assert.equal(frames[1].snapshot.windows[0].gridBounds.row,1);
+assert.equal(frames[1].presentationBufferIds.includes(3),false);
+assert.equal(viewport.accept({...report,sequence:2},1,100,60),false,'old frame acknowledgement rejected');
+// Multiple flushes and a trailing partial frame in one notification.
+redraw(['grid_line',[1,0,0,[["o"], ["n"], ["e"]]]],['flush',[]],['grid_line',[1,0,0,[["t"], ["w"], ["o"]]]],['flush',[]],['grid_line',[1,0,0,[["b"], ["a"], ["d"]]]]);
+await tick();
+assert.equal(frames.length,3);
+assert.ok(frames[2].screen.lines[0].startsWith('two'));
+assert.ok(session.getPresentationState().screen.lines[0].startsWith('two'));
+redraw(['flush',[]]);await tick();
+assert.ok(frames.at(-1).screen.lines[0].startsWith('bad'));
+// Exit between batches must not publish an incomplete or queued frame afterward.
+redraw(['grid_line',[1,0,0,[["e"], ["n"], ["d"]]]],['flush',[]],['grid_line',[1,0,0,[["x"], ["x"], ["x"]]]]);
+const count=frames.length;client.exit();await tick();assert.equal(frames.length,count);
+await session.dispose();
+console.log('Neovim flush publication, ownership invalidation and native epoch tests passed');

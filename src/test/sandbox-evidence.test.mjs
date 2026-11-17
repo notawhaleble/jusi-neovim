@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+import { linuxSandboxStatus, assertLinuxSandbox } from "../../scripts/sandbox-evidence.mjs";
+const inherited = linuxSandboxStatus("Seccomp:\t2\nSeccomp_filters:\t1\nNoNewPrivs:\t1\n");
+const renderer = linuxSandboxStatus("Seccomp:\t2\nSeccomp_filters:\t2\nNoNewPrivs:\t1\n");
+assert.doesNotThrow(() => assertLinuxSandbox(renderer, inherited));
+assert.throws(() => assertLinuxSandbox(inherited, inherited), /inherited container/);
+assert.throws(() => assertLinuxSandbox({ ...renderer, seccomp: 0 }, inherited), /seccomp/);
+assert.throws(() => assertLinuxSandbox({ ...renderer, noNewPrivileges: 0 }, inherited), /privilege/);
+assert.throws(() => assertLinuxSandbox(linuxSandboxStatus(""), inherited));
+assert.throws(() => assertLinuxSandbox(renderer, linuxSandboxStatus("")));
+console.log("sandbox evidence tests passed");

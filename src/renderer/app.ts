@@ -1,8 +1,19 @@
+import { cursorCell, cursorHighlight, hideCursor, updateCursorBlink, restartCursorBlink } from "./cursor.js";
+import { styleForHighlight } from "./highlight.js";
+import { byteOffsetToIndex, chunksText } from "../core/ui-text.js";
+import { commandText, renderedTextOffset, wrapHighlighted } from "./overlay-text.js";
+import { installGridMouse } from "./mouse.js";
+import { BrowserRegionNavigator, browserInteraction, sameBrowserTarget, type BrowserActionTarget, type BrowserInteractionPort } from "../backends/web/interaction.js";
+import { presentationBackends } from "../backends/index.js";
+import { createRendererSurface } from "../backends/renderer.js";
+import type { RendererSurface } from "../presentation/renderer-surface.js";
+import { TextLayerJob } from "../presentation/text-layer.js";
 import {
   AttachedWebView,
   CursorStyle,
   GridScreenState,
   HighlightAttrs,
+  HighlightChunk,
   MirrorDocument,
   ScreenCell,
   ScreenLineRun,
@@ -15,32 +26,21 @@ declare global {
     jusi: RendererApi;
   }
 
-  interface HTMLElementTagNameMap {
-    webview: HTMLElement & {
-      src: string;
-      allowpopups?: boolean;
-      partition?: string;
-      setAttribute(name: string, value: string): void;
-      focus(): void;
-      reload(): void;
-    };
-  }
+
 }
 
 let cellWidth = 9;
 let cellHeight = 18;
+const surfaces = new Map<number, RendererSurface<MirrorDocument>>();
+const surfaceFor = (host: HTMLElement | null | undefined) => host ? surfaces.get(Number(host.dataset.bufferId)) : undefined;
 const persistentViews = new Map<number, HTMLDivElement>();
 const persistentFrames = new Map<number, HTMLDivElement>();
 const persistentGridLayers = new Map<number, HTMLPreElement>();
 const latestAttachedViews = new Map<number, AttachedWebView>();
-const mirrorVersions = new Map<number, number>();
-const mirrorHashes = new Map<number, string>();
+const textJobs = new Map<number, TextLayerJob>();
 const mirrorTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const mirrorProjectionTimers = new Map<number, ReturnType<typeof setTimeout>>();
-const mirrorProjectionTokens = new Map<number, number>();
 const webModeFrameStates = new Map<number, boolean>();
-const mirrorCursorSignatures = new Map<number, string>();
-const mirrorSelectionSignatures = new Map<number, string>();
 let webModeBufferId: number | null = null;
 let latestState: RendererSessionState | null = null;
 let pendingRenderState: RendererSessionState | null = null;
@@ -50,7 +50,8 @@ let pointerHidden = false;
 let terminalFontSize = 14;
 let requestGridResize: () => void = () => {};
 let messagePagerSignature: string | null = null;
-let messagePagerDismissedSignature: string | null = null;
+let messagePagerDismissedRevision = -1;
+let messagePagerLineCount = 0;
 let messagePagerScroll = 0;
 
 const minTerminalFontSize = 10;
@@ -198,44 +199,39 @@ function resolveDefaultForeground(background: string, foreground: string | undef
   return candidate;
 }
 
-function cursorColorForStyle(
-  style: CursorStyle,
-  highlights: Record<number, HighlightAttrs>,
-  defaults: { foreground: string; background: string },
-): string {
-  const attrs = style.attrId === undefined ? undefined : highlights[style.attrId];
-  if (!attrs) {
-    return defaults.foreground;
-  }
-  if (attrs.reverse) {
-    return attrs.foreground ?? defaults.foreground;
-  }
-  return attrs.background ?? attrs.foreground ?? defaults.foreground;
-}
-
 function applyCursorStyle(
   element: HTMLElement,
   style: CursorStyle,
   originLeft: number,
   originTop: number,
-  color: string,
+  attrs: HighlightAttrs,
+  glyph: { text: string; width: number; offset: number },
+  identity: string,
 ): void {
   const percentage = Math.max(1, Math.min(100, style.cellPercentage || 100));
   const width = style.shape === "vertical"
     ? Math.max(2, Math.round((cellWidth * percentage) / 100))
-    : cellWidth;
+    : glyph.width;
   const height = style.shape === "horizontal"
     ? Math.max(2, Math.round((cellHeight * percentage) / 100))
     : cellHeight;
   const top = style.shape === "horizontal" ? originTop + cellHeight - height : originTop;
 
+  element.style.cssText = styleForHighlight(attrs, { foreground: "#d9dde7", background: "#16161d" });
   element.style.display = "block";
   element.style.width = `${width}px`;
   element.style.height = `${height}px`;
-  element.style.left = `${originLeft}px`;
+  element.style.left = `${originLeft - (style.shape === "block" ? glyph.offset : 0)}px`;
   element.style.top = `${top}px`;
-  element.style.backgroundColor = color;
-  element.style.opacity = style.shape === "block" ? "0.65" : "0.95";
+  element.style.opacity = "1";
+  element.style.fontFamily = '"Iosevka Term", "SF Mono", monospace';
+  element.style.fontSize = `${terminalFontSize}px`;
+  element.style.lineHeight = `${cellHeight}px`;
+  element.style.whiteSpace = "pre";
+  element.style.overflow = "hidden";
+  element.style.fontVariantLigatures = "none";
+  element.textContent = style.shape === "block" ? glyph.text : "";
+  updateCursorBlink(element, style, identity);
 }
 
 function measureCellMetrics(): void {
@@ -273,6 +269,7 @@ function applyTerminalFontSize(size: number, persist: boolean): void {
 }
 
 function handleAppZoom(event: { action: "in" | "out" | "reset" }): void {
+  void window.jusi.invalidateNativeViewport();
   const nextSize = event.action === "reset"
     ? defaultTerminalFontSize
     : terminalFontSize + (event.action === "in" ? 1 : -1);
@@ -298,8 +295,10 @@ function handleWebZoomed(): void {
   if (!host || !view) {
     return;
   }
-  scheduleMirrorRefresh(host);
-  scheduleMirrorProjection(host, 300, true, true);
+  // Shared document change tracking handles resize/reflow. A delayed forced
+  // extraction here can outlive navigation and reset the new document cursor.
+  surfaceFor(host)?.resetProjection();
+  scheduleMirrorProjection(host, 0, true, true);
 }
 
 function handleWebOpenActiveLink(): void {
@@ -313,6 +312,8 @@ function handleWebOpenActiveLink(): void {
   void handleWebOpenLink({
     bufferId: view.bufferId,
     windowId: view.windowId,
+    sessionId: view.sessionId,
+    incarnation: view.incarnation,
   });
 }
 
@@ -348,39 +349,6 @@ function displayRunText(text: string, column: number, highlighted: boolean): str
   return text;
 }
 
-function styleForHighlight(
-  attrs: HighlightAttrs | undefined,
-  defaults: { foreground: string; background: string },
-): string {
-  if (!attrs) {
-    return "";
-  }
-
-  const sourceForeground = attrs.foreground ?? defaults.foreground;
-  const sourceBackground = attrs.background ?? defaults.background;
-  const foreground = attrs.reverse ? sourceBackground : attrs.foreground;
-  const background = attrs.reverse ? sourceForeground : attrs.background;
-  const styles: string[] = [];
-  if (foreground) {
-    styles.push(`color:${foreground}`);
-  }
-  if (background) {
-    styles.push(`background-color:${background}`);
-  }
-  if (attrs.bold) {
-    styles.push("font-weight:700");
-  }
-  if (attrs.italic) {
-    styles.push("font-style:italic");
-  }
-  if (attrs.underline || attrs.undercurl) {
-    const decoration = attrs.undercurl ? "underline wavy" : "underline";
-    const color = attrs.special ?? foreground ?? defaults.foreground;
-    styles.push(`text-decoration:${decoration}`);
-    styles.push(`text-decoration-color:${color}`);
-  }
-  return styles.join(";");
-}
 
 function renderCellsInto(
   target: HTMLElement,
@@ -443,9 +411,9 @@ function renderRunsInto(
     for (const run of row) {
       const highlighted = run.highlightId !== 0 && Boolean(highlights[run.highlightId]);
       const text = displayRunText(run.text, column, highlighted);
-      column += run.text.length;
+      column += run.columns ?? run.text.length;
 
-      if (!highlighted) {
+      if (!highlighted && run.columns === undefined) {
         target.appendChild(document.createTextNode(text));
         continue;
       }
@@ -455,6 +423,15 @@ function renderRunsInto(
       const style = styleForHighlight(highlights[run.highlightId], defaults);
       if (style) {
         span.setAttribute("style", style);
+      }
+      if (run.columns !== undefined) {
+        span.style.display = 'inline-block';
+        span.style.width = `${run.columns * cellWidth}px`;
+        span.style.verticalAlign = 'top';
+        span.style.whiteSpace = 'pre';
+        span.style.direction = 'ltr';
+        span.style.unicodeBidi = 'isolate';
+        span.dataset.columns = String(run.columns);
       }
       target.appendChild(span);
     }
@@ -473,7 +450,7 @@ function renderGridContent(
   }
   target.dataset.renderSignature = signature;
 
-  if (grid.runs && grid.runs.some((row) => row.some((run) => run.highlightId !== 0))) {
+  if (grid.runs && grid.runs.some((row) => row.some((run) => run.highlightId !== 0 || run.columns !== undefined))) {
     renderRunsInto(target, grid.runs, highlights, defaults);
     return;
   }
@@ -495,7 +472,7 @@ function gridContentSignature(
         row
           .map((run) => {
             const style = run.highlightId === 0 ? "" : styleForHighlight(highlights[run.highlightId], defaults);
-            return `${run.highlightId}:${style}:${run.text}`;
+            return `${cellWidth}:${run.columns}:${run.highlightId}:${style}:${run.text}`;
           })
           .join("\u001f"),
       )
@@ -509,41 +486,56 @@ function gridContentSignature(
   return grid.lines.join("\u001e");
 }
 
-interface CmdlineView {
-  text: string;
-  cursorColumn: number;
+function renderOverlayChunks(target: HTMLElement, chunks: HighlightChunk[], state: RendererSessionState): void {
+  target.replaceChildren();
+  const background = state.screen.backgroundColor ?? '#16161d';
+  const foreground = resolveDefaultForeground(background, state.screen.foregroundColor);
+  for (const chunk of chunks) {
+    const span = document.createElement('span');
+    span.textContent = chunk.text;
+    span.dataset.highlightId = String(chunk.highlightId);
+    span.style.cssText = styleForHighlight(chunk.attrs ?? state.screen.highlights[chunk.highlightId], { foreground, background });
+    target.appendChild(span);
+  }
 }
 
-function formatCmdline(state: RendererSessionState["cmdline"], maxColumns: number): CmdlineView {
-  const indent = state.indent > 0 ? " ".repeat(state.indent) : "";
-  const base = `${indent}${state.prompt}${state.firstChar}${state.content}`;
-  const prefixLength = indent.length + state.prompt.length + state.firstChar.length;
-  const cursorIndex = Math.max(0, Math.min(base.length, prefixLength + state.position));
-  const scrollToCursor = (text: string): CmdlineView => {
-    if (maxColumns <= 0) {
-      return { text: "", cursorColumn: 0 };
+const textMeasureContext = document.createElement('canvas').getContext('2d');
+let textMeasureFont = '';
+const textMeasureCache = new Map<string, number>();
+const wrappedTextCache = new WeakMap<HighlightChunk[], { key: string; lines: HighlightChunk[][] }>();
+const entryTextCache = new WeakMap<object, HighlightChunk[]>();
+function wrapOverlayChunks(chunks: HighlightChunk[], maxColumns: number): HighlightChunk[][] {
+  const font = `${terminalFontSize}px "Iosevka Term", "SF Mono", monospace`;
+  if (textMeasureFont !== font) { textMeasureFont = font; textMeasureCache.clear(); }
+  const key = `${font}:${cellWidth}:${maxColumns}`;
+  const cached = wrappedTextCache.get(chunks);
+  if (cached?.key === key) return cached.lines;
+  if (textMeasureContext) textMeasureContext.font = font;
+  const lines = wrapHighlighted(chunks, Math.max(1, maxColumns) * cellWidth, (text, width) => {
+    if (text === '\t') return (8 - (Math.round(width / cellWidth) % 8)) * cellWidth;
+    let size = textMeasureCache.get(text);
+    if (size === undefined) {
+      size = textMeasureContext?.measureText(text).width ?? cellWidth;
+      if (textMeasureCache.size >= 4096) textMeasureCache.clear();
+      textMeasureCache.set(text, size);
     }
-    if (text.length <= maxColumns) {
-      return { text, cursorColumn: Math.max(0, Math.min(cursorIndex, maxColumns - 1)) };
-    }
-    const start = Math.max(0, Math.min(cursorIndex - maxColumns + 1, text.length - maxColumns));
-    return {
-      text: text.slice(start, start + maxColumns),
-      cursorColumn: Math.max(0, Math.min(cursorIndex - start, maxColumns - 1)),
-    };
-  };
+    return size;
+  });
+  wrappedTextCache.set(chunks, { key, lines });
+  return lines;
+}
 
-  if (!state.specialChar) {
-    return scrollToCursor(base);
-  }
+function entryChunks(entry: RendererSessionState['messages']['entries'][number]): HighlightChunk[] {
+  const cached = entryTextCache.get(entry);
+  if (cached) return cached;
+  const chunks = entry.chunks ?? [{ highlightId: 0, text: entry.text }];
+  const result = entry.truncated ? [{ highlightId: 0, text: '[earlier output truncated]\n' }, ...chunks] : chunks;
+  entryTextCache.set(entry, result);
+  return result;
+}
 
-  if (state.specialShift) {
-    return scrollToCursor(`${base.slice(0, cursorIndex)}${state.specialChar}${base.slice(cursorIndex)}`);
-  }
-  if (cursorIndex >= base.length) {
-    return scrollToCursor(`${base}${state.specialChar}`);
-  }
-  return scrollToCursor(`${base.slice(0, cursorIndex)}${state.specialChar}${base.slice(cursorIndex + 1)}`);
+function hasInteractiveMessage(state: RendererSessionState): boolean {
+  return pendingMessageEntries(state).some(entry => ['confirm', 'confirm_sub', 'number_prompt'].includes(entry.kind));
 }
 
 function getCommandAreaHeight(state: RendererSessionState): number {
@@ -553,7 +545,7 @@ function getCommandAreaHeight(state: RendererSessionState): number {
   }, { cellWidth, cellHeight });
 }
 
-function visibleCmdlineBlockLines(state: RendererSessionState): string[] {
+function visibleCmdlineBlockLines(state: RendererSessionState): HighlightChunk[][] {
   const blockLines = commandBlockLines(state);
   const maxRows = Math.max(0, state.screen.rows);
   if (blockLines.length <= maxRows) {
@@ -562,26 +554,31 @@ function visibleCmdlineBlockLines(state: RendererSessionState): string[] {
   return blockLines.slice(blockLines.length - maxRows);
 }
 
-function commandBlockLines(state: RendererSessionState): string[] {
-  const lines = state.cmdline.blockLines.flatMap((line) => splitCommandBlockLine(line, state.screen.cols));
+function commandBlockLines(state: RendererSessionState): HighlightChunk[][] {
+  const blocks = state.cmdline.blockChunks ?? state.cmdline.blockLines.map(text => [{ highlightId: 0, text }]);
+  const lines = blocks.flatMap(line => wrapOverlayChunks(line, state.screen.cols));
   lines.push(...visibleCommandMessageBlockLines(state));
   return lines;
 }
 
-function commandMessageBlockLines(state: RendererSessionState): string[] {
-  const lines: string[] = [];
+function pendingMessageEntries(state: RendererSessionState) {
+  return state.messages.entries.filter(entry => (entry.revision ?? 0) > messagePagerDismissedRevision);
+}
+
+function commandMessageBlockLines(state: RendererSessionState): HighlightChunk[][] {
+  const lines: HighlightChunk[][] = [];
   const hasReturnPrompt = hasReturnPromptMessage(state);
   if (hasReturnPrompt) {
-    lines.push(...state.messages.entries
+    lines.push(...pendingMessageEntries(state)
       .filter((entry) => entry.text !== "" && !isReturnPromptMessage(entry))
       .flatMap((entry) => messageBlockLines(entry, state.screen.cols)));
   } else {
-    lines.push(...state.messages.entries
+    lines.push(...pendingMessageEntries(state)
       .filter((entry) => isCommandBlockMessageEntry(entry, state.screen.cols))
       .flatMap((entry) => messageBlockLines(entry, state.screen.cols)));
   }
   if (state.messages.historyVisible) {
-    lines.push(...state.messages.history.flatMap((entry) => splitCommandBlockLine(entry.text, state.screen.cols)));
+    lines.push(...state.messages.history.filter(entry => (entry.revision ?? 0) > messagePagerDismissedRevision).flatMap((entry) => wrapOverlayChunks(entryChunks(entry), state.screen.cols)));
   }
   return lines;
 }
@@ -592,9 +589,9 @@ function commandMessageSignature(state: RendererSessionState): string | null {
     return null;
   }
   return [
-    state.messages.version,
+    ...pendingMessageEntries(state).map(entry => entry.revision ?? 0),
     hasReturnPromptMessage(state) ? "native-prompt" : "synthetic-prompt",
-    lines.join("\n"),
+    lines.map(chunksText).join("\n"),
   ].join("\u001f");
 }
 
@@ -602,7 +599,13 @@ function syncMessagePagerState(state: RendererSessionState): void {
   const signature = commandMessageSignature(state);
   if (signature !== messagePagerSignature) {
     messagePagerSignature = signature;
-    messagePagerScroll = 0;
+    const lineCount = commandMessageBlockLines(state).length;
+    const maxRows = Math.max(1, state.screen.rows);
+    const followedTail = messagePagerScroll >= Math.max(0, messagePagerLineCount - maxRows);
+    if (messagePagerLineCount === 0 || followedTail) {
+      messagePagerScroll = Math.max(0, lineCount - maxRows);
+    }
+    messagePagerLineCount = lineCount;
   }
   clampMessagePagerScroll(state);
 }
@@ -615,12 +618,12 @@ function clampMessagePagerScroll(state: RendererSessionState): void {
 
 function isCommandMessageDismissed(state: RendererSessionState): boolean {
   const signature = commandMessageSignature(state);
-  return signature !== null && signature === messagePagerDismissedSignature;
+  return signature === null && messagePagerDismissedRevision >= 0 && pendingMessageEntries(state).length === 0;
 }
 
-function visibleCommandMessageBlockLines(state: RendererSessionState): string[] {
+function visibleCommandMessageBlockLines(state: RendererSessionState): HighlightChunk[][] {
   const signature = commandMessageSignature(state);
-  if (signature === null || signature === messagePagerDismissedSignature) {
+  if (signature === null) {
     return [];
   }
   const lines = commandMessageBlockLines(state);
@@ -632,12 +635,13 @@ function visibleCommandMessageBlockLines(state: RendererSessionState): string[] 
 }
 
 function commandMessagePrompt(state: RendererSessionState): string | null {
+  if (state.cmdline.visible || hasInteractiveMessage(state)) return null;
   const signature = commandMessageSignature(state);
   if (signature === null || isCommandMessageDismissed(state)) {
     return null;
   }
 
-  const returnPromptEntry = state.messages.entries.find(isReturnPromptMessage);
+  const returnPromptEntry = pendingMessageEntries(state).find(isReturnPromptMessage);
   if (returnPromptEntry) {
     return returnPromptEntry.text || hitEnterPromptText;
   }
@@ -663,7 +667,7 @@ function visibleMessageEntries(state: RendererSessionState): RendererSessionStat
     return [];
   }
 
-  const entriesWithText = state.messages.entries.filter((entry) => entry.text !== "");
+  const entriesWithText = pendingMessageEntries(state).filter((entry) => entry.text !== "");
   const returnPromptEntry = entriesWithText.find(isReturnPromptMessage);
   if (returnPromptEntry) {
     return [returnPromptEntry];
@@ -672,11 +676,11 @@ function visibleMessageEntries(state: RendererSessionState): RendererSessionStat
 }
 
 function hasReturnPromptMessage(state: RendererSessionState): boolean {
-  return state.messages.entries.some(isReturnPromptMessage);
+  return pendingMessageEntries(state).some(isReturnPromptMessage);
 }
 
 function isReturnPromptMessage(entry: RendererSessionState["messages"]["entries"][number]): boolean {
-  return entry.kind === "return_prompt" || /press\s+(enter|return)/i.test(entry.text);
+  return entry.kind === "return_prompt";
 }
 
 function isMultilineMessageEntry(entry: RendererSessionState["messages"]["entries"][number]): boolean {
@@ -687,32 +691,16 @@ function isCommandBlockMessageEntry(
   entry: RendererSessionState["messages"]["entries"][number],
   maxColumns: number,
 ): boolean {
-  return isMultilineMessageEntry(entry) || splitCommandBlockLine(entry.text, maxColumns).length > 1;
+  return entry.truncated === true || isMultilineMessageEntry(entry) || wrapOverlayChunks(entryChunks(entry), maxColumns).length > 1;
 }
 
-function messageBlockLines(entry: RendererSessionState["messages"]["entries"][number], maxColumns: number): string[] {
-  const lines = splitCommandBlockLine(entry.text, maxColumns);
-  while (lines.length > 0 && lines[0] === "") {
+function messageBlockLines(entry: RendererSessionState["messages"]["entries"][number], maxColumns: number): HighlightChunk[][] {
+  const lines = wrapOverlayChunks(entryChunks(entry), maxColumns);
+  while (lines.length > 0 && chunksText(lines[0]) === "") {
     lines.shift();
   }
-  while (lines.length > 0 && lines[lines.length - 1] === "") {
+  while (lines.length > 0 && chunksText(lines[lines.length - 1]) === "") {
     lines.pop();
-  }
-  return lines;
-}
-
-function splitCommandBlockLine(line: string, maxColumns: number): string[] {
-  const wrapColumns = Math.max(1, maxColumns);
-  return line.split("\n").flatMap((part) => wrapCommandTextLine(part, wrapColumns));
-}
-
-function wrapCommandTextLine(line: string, maxColumns: number): string[] {
-  if (line.length <= maxColumns) {
-    return [line];
-  }
-  const lines: string[] = [];
-  for (let index = 0; index < line.length; index += maxColumns) {
-    lines.push(line.slice(index, index + maxColumns));
   }
   return lines;
 }
@@ -731,35 +719,6 @@ function windowKind(
 ): "text" | "web" | null {
   const buffer = state.snapshot.buffers.find((entry) => entry.id === window.bufferId);
   return buffer?.kind ?? null;
-}
-
-function hitTestWindow(
-  state: RendererSessionState,
-  x: number,
-  y: number,
-): RendererSessionState["snapshot"]["windows"][number] | null {
-  const windows = state.snapshot.windows
-    .filter((window) => window.tabId === state.snapshot.currentTabId)
-    .filter(
-      (window) =>
-        typeof window.row === "number" &&
-        typeof window.col === "number" &&
-        typeof window.width === "number" &&
-        typeof window.height === "number",
-    );
-
-  for (let idx = windows.length - 1; idx >= 0; idx -= 1) {
-    const window = windows[idx];
-    const left = window.col! * cellWidth;
-    const top = window.row! * cellHeight;
-    const width = window.width! * cellWidth;
-    const height = window.height! * cellHeight;
-    if (x >= left && x < left + width && y >= top && y < top + height) {
-      return window;
-    }
-  }
-
-  return null;
 }
 
 function focusHostSurface(): void {
@@ -781,13 +740,12 @@ async function applyWebModeFrame(host: HTMLDivElement, visible: boolean, force =
   if (!force && Number.isFinite(bufferId) && webModeFrameStates.get(bufferId) === visible) {
     return;
   }
-  const browser = host.querySelector("webview") as HTMLElement | null;
-  const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
-  if (!browser || browser.dataset.domReady !== "1" || !executableBrowser || typeof executableBrowser.executeJavaScript !== "function") {
+  const surface = surfaceFor(host);
+  if (!surface?.ready) {
     return;
   }
   try {
-    await executableBrowser.executeJavaScript(webModeFrameSource(visible));
+    await surface.setMode(visible ? "rich" : "text");
     if (Number.isFinite(bufferId)) {
       webModeFrameStates.set(bufferId, visible);
     }
@@ -797,13 +755,12 @@ async function applyWebModeFrame(host: HTMLDivElement, visible: boolean, force =
 }
 
 async function applyWebPointerVisibility(host: HTMLDivElement): Promise<void> {
-  const browser = host.querySelector("webview") as HTMLElement | null;
-  const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
-  if (!browser || browser.dataset.domReady !== "1" || !executableBrowser || typeof executableBrowser.executeJavaScript !== "function") {
+  const surface = surfaceFor(host);
+  if (!surface?.ready) {
     return;
   }
   try {
-    await executableBrowser.executeJavaScript(pointerVisibilitySource(pointerHidden && webModeBufferId === null));
+    await surface.setPointerHidden(pointerHidden && webModeBufferId === null);
   } catch (_error) {
     // The webview can be temporarily unavailable while Electron swaps pages.
   }
@@ -823,6 +780,13 @@ function syncWebModeFrames(force = false): void {
 
 function setWebMode(bufferId: number | null): void {
   const previousBufferId = webModeBufferId;
+  if (previousBufferId !== bufferId) {
+    for (const [id, mode] of [[previousBufferId, "text"], [bufferId, "rich"]] as const) {
+      const view = id === null ? undefined : latestAttachedViews.get(id);
+      if (view?.sessionId) void window.jusi.setPresentationMode(view.bufferId, view.sessionId, view.windowId, mode)
+        .catch(error => console.error("Presentation mode synchronization failed", error));
+    }
+  }
   webModeBufferId = bufferId;
   if (bufferId !== null) {
     showPointer();
@@ -869,13 +833,16 @@ function syncWebModeToState(state: RendererSessionState): void {
 
 function ensureViewHost(view: AttachedWebView): HTMLDivElement {
   const existing = persistentViews.get(view.bufferId);
-  if (existing) {
+  if (existing && existing.dataset.sessionId === view.sessionId && surfaces.get(view.bufferId)?.matches(view)) {
     return existing;
   }
+  if (existing) disposeView(view.bufferId, existing);
 
   const host = document.createElement("div");
   host.className = "web-view-box";
   host.dataset.bufferId = String(view.bufferId);
+  host.dataset.providerId = view.providerId ?? "";
+  host.dataset.sessionId = view.sessionId ?? "";
   host.dataset.windowId = String(view.windowId);
 
   const title = document.createElement("div");
@@ -900,35 +867,105 @@ function ensureViewHost(view: AttachedWebView): HTMLDivElement {
   });
   host.appendChild(meta);
 
-  const browser = document.createElement("webview");
-  browser.className = "web-view-box__browser";
-  browser.partition = `persist:jusi-buffer-${view.bufferId}`;
-  browser.src = view.url;
-  browser.dataset.currentUrl = view.url;
-  browser.dataset.domReady = "0";
-  browser.addEventListener("dom-ready", () => {
-    browser.dataset.domReady = "1";
-    webModeFrameStates.delete(view.bufferId);
-    mirrorCursorSignatures.delete(view.bufferId);
-    mirrorSelectionSignatures.delete(view.bufferId);
-    void applyWebModeFrame(host, webModeBufferId === view.bufferId);
-    void applyWebPointerVisibility(host);
-    scheduleMirrorRefresh(host);
+  host.dataset.textLayer = view.textLayer ?? "auto";
+  host.dataset.textSource = view.textSource ?? "dom";
+  const surface = createRendererSurface(view, {
+    textStatusChanged: status => {
+      if (host.dataset.textSource === "worker") return;
+      if (view.providerId === 'web') {
+        // Status callbacks may run before the guest handle exists during construction.
+        queueMicrotask(() => { const current = surfaces.get(view.bufferId);
+          if (current?.ready && current.matches(view)) void window.jusi.reportBrowserTextStatus(view.bufferId, view.sessionId, current.documentHandle(), status).catch(() => {});
+        });
+      }
+      const element = host.querySelector<HTMLElement>(".presentation-text-status");
+      if (element) {
+        element.dataset.status = status;
+        element.textContent = { disabled: "Text off", idle: "Text pending", building: "Building text…", ready: "Text ready", error: "Text failed · retry", limited: "Text limit reached · retry" }[status];
+      }
+    },
+    textChanged: async () => {
+
+
+    },
+    invalidated: () => textJobs.get(view.bufferId)?.invalidate(host.dataset.textLayer !== "off"),
+    ready: () => {
+      // Identity binding is needed by browser commands even when no text job runs.
+      if (view.providerId === 'web' && view.textLayer === 'off') {
+        const current = surfaces.get(view.bufferId);
+        if (current?.matches(view)) void window.jusi.acquireDocument(view.bufferId, view.sessionId, current.documentHandle()).catch(() => {});
+      }
+      webModeFrameStates.delete(view.bufferId);
+
+
+      void applyWebModeFrame(host, webModeBufferId === view.bufferId);
+      void applyWebPointerVisibility(host);
+      if (host.dataset.textSource === "worker") scheduleMirrorRefresh(host);
+    },
+    crashed: () => {
+      textJobs.get(view.bufferId)?.fail();
+      const status = host.querySelector(".presentation-text-status");
+      if (status) status.textContent = "Viewer stopped · reload";
+    },
+    loaded: () => { if (host.dataset.textSource === "worker") scheduleMirrorRefresh(host); },
+    focused: () => setWebMode(view.bufferId),
+    blurred: () => { void window.jusi.resetBrowserInput(surface.documentHandle()).catch(() => {}); },
+    scrolled: () => { showPointer(); scheduleMirrorProjection(host, 80, false, true); },
+    pointerVisible: showPointer,
   });
-  browser.addEventListener("did-finish-load", () => {
-    scheduleMirrorRefresh(host);
+  surfaces.set(view.bufferId, surface);
+  surface.attach(host);
+
+  const textStatus = document.createElement("button");
+  textStatus.className = "presentation-text-status";
+  textStatus.type = "button";
+  textStatus.setAttribute("aria-live", "polite");
+  textStatus.title = "Click to rebuild the text layer";
+  textStatus.addEventListener("click", () => {
+    if (surface.crashed) surface.reload();
+    else scheduleMirrorRefresh(host);
   });
-  browser.addEventListener("mousedown", (event) => {
-    setWebMode(view.bufferId);
-    void moveMirrorCursorToClick(host, event as MouseEvent);
+  host.appendChild(textStatus);
+  if (view.providerId === "web") {
+    const identity = document.createElement("span");
+    identity.className = "browser-profile-label";
+    identity.textContent = view.surface.uri.startsWith("jusi-directory:") ? "Local · isolated"
+      : view.privateBrowsing ? "Private · this buffer" : `Profile · ${view.profile ?? "default"}`;
+    host.appendChild(identity);
+    if (!view.surface.uri.startsWith("jusi-directory:")) {
+      const popup = document.createElement("button");
+      popup.className = "browser-popup-permission";
+      popup.textContent = "Allow next popup";
+      popup.title = "Allow one native browser popup for 15 seconds; then repeat the page action";
+      popup.addEventListener("click", () => {
+        void window.jusi.armBrowserPopup(view.bufferId, view.sessionId, surface.documentHandle()).then(allowed => {
+          popup.title = allowed ? "One popup allowed for 15 seconds; repeat the page action"
+            : "Popup unavailable: close the existing child or wait for the page to load";
+        }).catch(() => { popup.textContent = "Popup unavailable"; });
+      });
+      host.appendChild(popup);
+    }
+  }
+  const job = new TextLayerJob((status) => {
+    textStatus.dataset.status = status;
+    textStatus.textContent = { disabled: "Text off", idle: "Text pending", building: "Building text…", ready: "Text ready", error: "Text failed · retry", limited: "Text limit reached · retry" }[status];
   });
-  browser.addEventListener("wheel", () => {
-    showPointer();
-    scheduleMirrorProjection(host, 80, false, true);
-  });
-  browser.addEventListener("mousemove", showPointer);
-  browser.addEventListener("pointerdown", showPointer);
-  host.appendChild(browser);
+  if (view.textSource === "worker") {
+    textJobs.set(view.bufferId, job);
+    job.invalidate(view.textLayer !== "off");
+  } else {
+    textStatus.dataset.status = view.textLayer === "off" ? "disabled" : "idle";
+    textStatus.textContent = view.textLayer === "off" ? "Text off" : "Text pending";
+    const acquire = () => window.jusi.acquireDocument(view.bufferId, view.sessionId, surface.documentHandle());
+    surface.configureText({
+      invalidate: async () => {
+        if (!surface.ready) return; // main already revokes navigation/crash tickets
+        if (await acquire()) await window.jusi.invalidateDocument(view.bufferId, view.sessionId, surface.documentHandle());
+      },
+      acquire,
+      publish: (ticket, mirror) => window.jusi.updateWebMirror(ticket, mirror),
+    });
+  }
 
   const mirrorCursor = document.createElement("div");
   mirrorCursor.className = "web-view-box__mirror-cursor";
@@ -942,991 +979,26 @@ function ensureViewHost(view: AttachedWebView): HTMLDivElement {
   return host;
 }
 
-function mirrorExtractorSource(): string {
-  return `(() => {
-    window.__jusiMirrorNodes = new Map();
-    window.__jusiMirrorIndexMap = [];
-    const maxChars = 200000;
-    const collapsibleWhitespace = /[ \\t\\n\\f\\r]/;
-    const lines = [];
-    const indexMap = [];
-    let currentLine = "";
-    let currentLineStart = 0;
-    let currentLineTop = null;
-    let lastWasSpace = false;
-    let charCount = 0;
-    let currentBlock = null;
-    let currentParent = null;
-    const styleCache = new WeakMap();
-    const lineHeight = (() => {
-      const style = window.getComputedStyle(document.body || document.documentElement);
-      const parsed = Number.parseFloat(style.lineHeight);
-      return Number.isFinite(parsed) && parsed > 0 ? parsed : 16;
-    })();
-    window.__jusiMirrorLineHeight = lineHeight;
-    const getStyle = (element) => {
-      if (!styleCache.has(element)) {
-        styleCache.set(element, window.getComputedStyle(element));
-      }
-      return styleCache.get(element);
-    };
-    const applyTextTransform = (text, transform) => {
-      const mode = String(transform || "").toLowerCase();
-      if (mode === "uppercase") {
-        return text.toUpperCase();
-      }
-      if (mode === "lowercase") {
-        return text.toLowerCase();
-      }
-      if (mode === "capitalize") {
-        return text.replace(/\\b[a-z]/g, (match) => match.toUpperCase());
-      }
-      return text;
-    };
-    const normalizeNodeText = (text, whiteSpace, textTransform) => {
-      const ws = String(whiteSpace || "").toLowerCase();
-      const preserve = ws === "pre" || ws === "pre-wrap" || ws === "break-spaces";
-      const preLine = ws === "pre-line";
-      let normalized = "";
-      const offsets = [];
-      for (let index = 0; index < text.length; index += 1) {
-        const char = text[index];
-        if (char === "\\r") {
-          continue;
-        }
-        if (collapsibleWhitespace.test(char)) {
-          if (preserve) {
-            normalized += char;
-            offsets.push(index);
-            lastWasSpace = char === " " || char === "\\t";
-            continue;
-          }
-          if (preLine && char === "\\n") {
-            normalized += "\\n";
-            offsets.push(index);
-            lastWasSpace = false;
-            continue;
-          }
-          if (lastWasSpace) {
-            continue;
-          }
-          normalized += " ";
-          offsets.push(index);
-          lastWasSpace = true;
-          continue;
-        }
-        normalized += char;
-        offsets.push(index);
-        lastWasSpace = false;
-      }
-      const transformed = applyTextTransform(normalized, textTransform);
-      return transformed.length === normalized.length
-        ? { text: transformed, offsets }
-        : { text: normalized, offsets };
-    };
-    const rectsForRange = (node, startOffset, endOffset) => {
-      if (endOffset <= startOffset) {
-        return [];
-      }
-      const range = document.createRange();
-      try {
-        range.setStart(node, Math.max(0, Math.min(startOffset, node.length)));
-        range.setEnd(node, Math.max(0, Math.min(endOffset, node.length)));
-        return Array.from(range.getClientRects())
-          .filter((rect) => rect.width > 0 || rect.height > 0)
-          .map((rect) => ({
-            x: rect.x,
-            y: rect.y,
-            top: rect.top,
-            left: rect.left,
-            width: rect.width,
-            height: rect.height,
-          }));
-      } catch (_error) {
-        return [];
-      } finally {
-        range.detach();
-      }
-    };
-    const firstRectForRange = (node, startOffset, endOffset) => {
-      const rects = rectsForRange(node, startOffset, endOffset);
-      return rects.length > 0 ? rects[0] : null;
-    };
-    const crossesVisualLines = (rects) => {
-      if (rects.length <= 1) {
-        return false;
-      }
-      const firstTop = rects[0].top;
-      return rects.some((rect) => Math.abs(rect.top - firstTop) > lineHeight * 0.6);
-    };
-    const tokenize = (text) => {
-      const tokens = [];
-      let index = 0;
-      while (index < text.length) {
-        const char = text[index];
-        if (char === "\\n") {
-          tokens.push({ type: "newline", start: index, end: index + 1 });
-          index += 1;
-          continue;
-        }
-        if (char === " " || char === "\\t") {
-          const start = index;
-          while (index < text.length && (text[index] === " " || text[index] === "\\t")) {
-            index += 1;
-          }
-          tokens.push({ type: "space", start, end: index });
-          continue;
-        }
-        const start = index;
-        while (index < text.length && text[index] !== " " && text[index] !== "\\t" && text[index] !== "\\n") {
-          index += 1;
-        }
-        tokens.push({ type: "word", start, end: index });
-      }
-      return tokens;
-    };
-    const blockDisplayPattern = /^(block|list-item|table|table-row|table-cell|flex|grid|flow-root)$/;
-    const blockAncestor = (node) => {
-      let element = node.parentElement;
-      const root = document.body || document.documentElement;
-      while (element && element !== root && element !== document.documentElement) {
-        const display = getStyle(element).display || "";
-        if (blockDisplayPattern.test(display)) {
-          return element;
-        }
-        element = element.parentElement;
-      }
-      return node.parentElement;
-    };
-    const separatorTags = new Set(["A", "BUTTON", "LI", "TD", "TH", "OPTION", "SUMMARY"]);
-    const shouldSeparateInlineNodes = (previous, next) => {
-      if (!previous || !next || previous === next || currentLine.length === 0 || currentLine.endsWith(" ")) {
-        return false;
-      }
-      const previousTag = previous.tagName ? previous.tagName.toUpperCase() : "";
-      const nextTag = next.tagName ? next.tagName.toUpperCase() : "";
-      if (separatorTags.has(previousTag) || separatorTags.has(nextTag)) {
-        return true;
-      }
-      const previousDisplay = getStyle(previous).display || "";
-      const nextDisplay = getStyle(next).display || "";
-      return previousDisplay.includes("inline-block") || nextDisplay.includes("inline-block");
-    };
-    const isTextNodeVisible = (node) => {
-      if (!node || node.nodeType !== Node.TEXT_NODE || !node.parentElement) {
-        return false;
-      }
-      const parent = node.parentElement;
-      const tag = parent.tagName ? parent.tagName.toUpperCase() : "";
-      if (["SCRIPT","STYLE","NOSCRIPT","TEMPLATE"].includes(tag)) {
-        return false;
-      }
-      if (parent.closest && parent.closest('[aria-hidden="true"], #jusi-neovim-mirror-overlay, #jusi-neovim-web-mode-frame')) {
-        return false;
-      }
-      const style = getStyle(parent);
-      if (!style || style.display === "none" || style.visibility === "hidden") {
-        return false;
-      }
-      return true;
-    };
-    const flushLine = (includeNewline = true, preserveEmpty = false) => {
-      while (currentLine.endsWith(" ")) {
-        currentLine = currentLine.slice(0, -1);
-        indexMap.pop();
-      }
-      if (currentLine.length === 0 && !preserveEmpty) {
-        currentLineTop = null;
-        lastWasSpace = false;
-        currentLineStart = indexMap.length;
-        return;
-      }
-      const lineStart = currentLineStart;
-      lines.push({
-        lineNumber: lines.length,
-        text: currentLine,
-        startIndex: lineStart,
-        endIndex: lineStart + currentLine.length,
-        spans: [],
-      });
-      currentLine = "";
-      currentLineTop = null;
-      lastWasSpace = false;
-      if (includeNewline) {
-        indexMap.push(null);
-      }
-      currentLineStart = indexMap.length;
-    };
-    const pushSyntheticSpace = () => {
-      if (currentLine.length === 0 || currentLine.endsWith(" ")) {
-        return;
-      }
-      currentLine += " ";
-      indexMap.push(null);
-      charCount += 1;
-    };
-    const pushSpaceRun = (text) => {
-      if (currentLine.length === 0) {
-        return;
-      }
-      for (let index = 0; index < text.length && charCount < maxChars; index += 1) {
-        if (currentLine.endsWith(" ") && text[index] === " ") {
-          continue;
-        }
-        currentLine += text[index];
-        indexMap.push(null);
-        charCount += 1;
-      }
-    };
-    const pushMappedChar = (node, char, offset, rect) => {
-      if (char === "\\n") {
-        flushLine(true, true);
-        return;
-      }
-      if (char === " " && currentLine.length === 0) {
-        return;
-      }
-      if (rect && currentLineTop !== null && Math.abs(rect.top - currentLineTop) > lineHeight * 0.6) {
-        flushLine();
-      }
-      if (currentLine.length === 0) {
-        currentLineStart = indexMap.length;
-        currentLineTop = rect ? rect.top : null;
-      }
-      currentLine += char;
-      indexMap.push({ node, offset });
-      charCount += 1;
-    };
-    const pushMappedRun = (node, text, offsets, start, end, rect) => {
-      if (rect && currentLineTop !== null && Math.abs(rect.top - currentLineTop) > lineHeight * 0.6) {
-        flushLine();
-      }
-      if (currentLine.length === 0) {
-        currentLineStart = indexMap.length;
-        currentLineTop = rect ? rect.top : null;
-      }
-      for (let index = start; index < end && charCount < maxChars; index += 1) {
-        currentLine += text[index];
-        indexMap.push({ node, offset: offsets[index] });
-        charCount += 1;
-      }
-    };
-    const pushWrappedRun = (node, text, offsets, start, end) => {
-      for (let index = start; index < end && charCount < maxChars; index += 1) {
-        const char = text[index];
-        const rect = firstRectForRange(node, offsets[index], offsets[index] + 1);
-        pushMappedChar(node, char, offsets[index], rect);
-      }
-    };
-    const pushToken = (node, text, offsets, token) => {
-      if (token.type === "newline") {
-        flushLine(true, true);
-        return;
-      }
-      if (token.type === "space") {
-        pushSpaceRun(text.slice(token.start, token.end));
-        return;
-      }
-      const startOffset = offsets[token.start];
-      const endOffset = offsets[token.end - 1] + 1;
-      const rects = rectsForRange(node, startOffset, endOffset);
-      if (crossesVisualLines(rects)) {
-        pushWrappedRun(node, text, offsets, token.start, token.end);
-        return;
-      }
-      pushMappedRun(node, text, offsets, token.start, token.end, rects.length > 0 ? rects[0] : null);
-    };
-    const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        return isTextNodeVisible(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-      },
-    });
-    let node = walker.nextNode();
-    while (node && charCount < maxChars) {
-      const parent = node.parentElement;
-      const block = blockAncestor(node);
-      if (currentBlock && block !== currentBlock && currentLine.length > 0) {
-        flushLine();
-      }
-      currentBlock = block;
-      if (shouldSeparateInlineNodes(currentParent, parent)) {
-        pushSyntheticSpace();
-      }
-      currentParent = parent;
-      const style = parent ? getStyle(parent) : null;
-      const normalized = normalizeNodeText(node.nodeValue || "", style ? style.whiteSpace : "", style ? style.textTransform : "");
-      const tokens = tokenize(normalized.text);
-      for (const token of tokens) {
-        if (charCount >= maxChars) {
-          break;
-        }
-        pushToken(node, normalized.text, normalized.offsets, token);
-      }
-      node = walker.nextNode();
-    }
-    flushLine(false);
-    window.__jusiMirrorIndexMap = indexMap;
-    const totalTextLength = lines.length > 0 ? lines[lines.length - 1].endIndex : 0;
-    return {
-      version: Date.now(),
-      lines,
-      totalTextLength,
-    };
-  })()`;
-}
-
-function mirrorProjectionClearSource(): string {
-  return `(() => {
-    const caret = document.getElementById("jusi-neovim-mirror-caret");
-    if (caret) {
-      caret.style.display = "none";
-    }
-  })()`;
-}
-
-function mirrorSelectionClearSource(): string {
-  return `(() => {
-    const root = document.getElementById("jusi-neovim-mirror-selection");
-    if (root) {
-      root.replaceChildren();
-    }
-  })()`;
-}
-
-function webModeFrameSource(visible: boolean): string {
-  return `(() => {
-    const frame = document.getElementById("jusi-neovim-web-mode-frame");
-    if (frame) {
-      frame.remove();
-    }
-  })()`;
-}
-
-function pointerVisibilitySource(hidden: boolean): string {
-  return `(() => {
-    const id = "jusi-neovim-pointer-visibility";
-    let style = document.getElementById(id);
-    if (${hidden ? "true" : "false"}) {
-      if (!style) {
-        style = document.createElement("style");
-        style.id = id;
-        (document.head || document.documentElement).appendChild(style);
-      }
-      style.textContent = "html, body, * { cursor: none !important; }";
-      return;
-    }
-    if (style) {
-      style.remove();
-    }
-  })()`;
-}
-
-function mirrorSelectionProjectionSource(startIndex: number, endIndex: number): string {
-  return `(() => {
-    const indexMap = window.__jusiMirrorIndexMap || [];
-    const startIndex = Math.max(0, Math.floor(${startIndex}));
-    const endIndex = Math.max(startIndex, Math.floor(${endIndex}));
-    const nearestMappedIndex = (start, direction) => {
-      let cursor = Math.max(0, Math.min(start, indexMap.length - 1));
-      while (cursor >= 0 && cursor < indexMap.length) {
-        if (indexMap[cursor]) {
-          return cursor;
-        }
-        cursor += direction;
-      }
-      return null;
-    };
-    const boundaryForIndex = (target, isEnd) => {
-      if (indexMap.length === 0) {
-        return null;
-      }
-      if (target <= 0) {
-        const first = nearestMappedIndex(0, 1);
-        return first === null ? null : indexMap[first];
-      }
-      if (target >= indexMap.length) {
-        const last = nearestMappedIndex(indexMap.length - 1, -1);
-        return last === null ? null : { node: indexMap[last].node, offset: indexMap[last].offset + 1 };
-      }
-      const mapped = indexMap[target];
-      if (mapped) {
-        return mapped;
-      }
-      if (isEnd) {
-        const previous = nearestMappedIndex(target - 1, -1);
-        return previous === null ? null : { node: indexMap[previous].node, offset: indexMap[previous].offset + 1 };
-      }
-      const next = nearestMappedIndex(target, 1);
-      return next === null ? null : indexMap[next];
-    };
-    const ensureSelectionRoot = () => {
-      let overlay = document.getElementById("jusi-neovim-mirror-overlay");
-      if (!overlay) {
-        overlay = document.createElement("div");
-        overlay.id = "jusi-neovim-mirror-overlay";
-        overlay.style.position = "fixed";
-        overlay.style.left = "0px";
-        overlay.style.top = "0px";
-        overlay.style.width = "100vw";
-        overlay.style.height = "100vh";
-        overlay.style.overflow = "visible";
-        overlay.style.pointerEvents = "none";
-        overlay.style.zIndex = "2147483647";
-        overlay.style.contain = "layout paint style";
-        (document.body || document.documentElement).appendChild(overlay);
-      }
-      let root = document.getElementById("jusi-neovim-mirror-selection");
-      if (!root) {
-        root = document.createElement("div");
-        root.id = "jusi-neovim-mirror-selection";
-        root.style.position = "absolute";
-        root.style.left = "0px";
-        root.style.top = "0px";
-        root.style.width = "100vw";
-        root.style.height = "100vh";
-        root.style.pointerEvents = "none";
-        overlay.insertBefore(root, overlay.firstChild);
-      }
-      return root;
-    };
-    const root = ensureSelectionRoot();
-    root.replaceChildren();
-    if (endIndex <= startIndex) {
-      return 0;
-    }
-    const start = boundaryForIndex(startIndex, false);
-    const end = boundaryForIndex(endIndex, true);
-    if (!start || !end || !start.node || !end.node) {
-      return 0;
-    }
-    const range = document.createRange();
-    try {
-      range.setStart(start.node, Math.max(0, Math.min(start.offset, start.node.length)));
-      range.setEnd(end.node, Math.max(0, Math.min(end.offset, end.node.length)));
-    } catch (_error) {
-      range.detach();
-      return 0;
-    }
-    const rects = Array.from(range.getClientRects());
-    let count = 0;
-    for (const rect of rects) {
-      if (rect.width <= 0 || rect.height <= 0) {
-        continue;
-      }
-      const node = document.createElement("div");
-      node.style.position = "absolute";
-      node.style.left = Math.round(rect.left) + "px";
-      node.style.top = Math.round(rect.top) + "px";
-      node.style.width = Math.max(1, Math.round(rect.width)) + "px";
-      node.style.height = Math.max(1, Math.round(rect.height)) + "px";
-      node.style.background = "rgba(70, 130, 255, 0.36)";
-      node.style.outline = "1px solid rgba(70, 130, 255, 0.22)";
-      root.appendChild(node);
-      count += 1;
-    }
-    range.detach();
-    return count;
-  })()`;
-}
-
-function mirrorProjectionSource(index: number, autoScroll: boolean): string {
-  return `(() => {
-    const indexMap = window.__jusiMirrorIndexMap || [];
-    const requestedIndex = Math.max(0, Math.floor(${index}));
-    const shouldAutoScroll = ${autoScroll ? "true" : "false"};
-    const nearestMappedIndex = (start, direction) => {
-      let cursor = Math.max(0, Math.min(start, indexMap.length - 1));
-      while (cursor >= 0 && cursor < indexMap.length) {
-        if (indexMap[cursor]) {
-          return cursor;
-        }
-        cursor += direction;
-      }
-      return null;
-    };
-    const boundaryForIndex = (target) => {
-      if (indexMap.length === 0) {
-        return null;
-      }
-      if (target <= 0) {
-        const first = nearestMappedIndex(0, 1);
-        return first === null ? null : indexMap[first];
-      }
-      if (target >= indexMap.length) {
-        const last = nearestMappedIndex(indexMap.length - 1, -1);
-        return last === null ? null : { node: indexMap[last].node, offset: indexMap[last].offset + 1 };
-      }
-      const mapped = indexMap[target];
-      if (mapped) {
-        return mapped;
-      }
-      const previous = nearestMappedIndex(target - 1, -1);
-      if (previous !== null) {
-        return { node: indexMap[previous].node, offset: indexMap[previous].offset + 1 };
-      }
-      const next = nearestMappedIndex(target, 1);
-      return next === null ? null : indexMap[next];
-    };
-    const boundary = boundaryForIndex(requestedIndex);
-    if (!boundary || !boundary.node || boundary.node.nodeType !== Node.TEXT_NODE) {
-      return null;
-    }
-    const ensureCaret = () => {
-      let root = document.getElementById("jusi-neovim-mirror-overlay");
-      if (!root) {
-        root = document.createElement("div");
-        root.id = "jusi-neovim-mirror-overlay";
-        root.style.position = "fixed";
-        root.style.left = "0px";
-        root.style.top = "0px";
-        root.style.width = "100vw";
-        root.style.height = "100vh";
-        root.style.overflow = "visible";
-        root.style.pointerEvents = "none";
-        root.style.zIndex = "2147483647";
-        root.style.contain = "layout paint style";
-        (document.body || document.documentElement).appendChild(root);
-      }
-      let caret = document.getElementById("jusi-neovim-mirror-caret");
-      if (!caret) {
-        caret = document.createElement("div");
-        caret.id = "jusi-neovim-mirror-caret";
-        caret.style.position = "absolute";
-        caret.style.boxSizing = "border-box";
-        caret.style.border = "1px solid #4f7cff";
-        caret.style.background = "rgba(79, 124, 255, 0.2)";
-        caret.style.boxShadow = "0 0 0 1px rgba(255,255,255,0.55), 0 0 6px rgba(79,124,255,0.45)";
-        caret.style.pointerEvents = "none";
-        root.appendChild(caret);
-      }
-      return caret;
-    };
-    const rectForBoundary = () => {
-      const textNode = boundary.node;
-      const offset = Math.max(0, Math.min(boundary.offset, textNode.length));
-      const range = document.createRange();
-      let rect = null;
-      try {
-        range.setStart(textNode, offset);
-        range.setEnd(textNode, Math.min(offset + 1, textNode.length));
-        const rects = range.getClientRects();
-        for (const candidate of Array.from(rects)) {
-          if (candidate.width > 0 || candidate.height > 0) {
-            rect = candidate;
-            break;
-          }
-        }
-        if (!rect) {
-          const candidate = range.getBoundingClientRect();
-          if (candidate && (candidate.width > 0 || candidate.height > 0)) {
-            rect = candidate;
-          }
-        }
-      } catch (_error) {
-        rect = null;
-      } finally {
-        range.detach();
-      }
-      return rect;
-    };
-    const scrollingElement = () => document.scrollingElement || document.documentElement || document.body;
-    const canScrollElement = (element, axis) => {
-      if (!element || element.nodeType !== Node.ELEMENT_NODE) {
-        return false;
-      }
-      const style = window.getComputedStyle(element);
-      const overflow = axis === "y" ? style.overflowY : style.overflowX;
-      if (!["auto", "scroll", "overlay"].includes(overflow)) {
-        return false;
-      }
-      return axis === "y"
-        ? element.scrollHeight > element.clientHeight + 1
-        : element.scrollWidth > element.clientWidth + 1;
-    };
-    const scrollCandidates = (axis) => {
-      const candidates = [];
-      let element = boundary.node.parentElement;
-      while (element && element !== document.documentElement) {
-        if (canScrollElement(element, axis)) {
-          candidates.push(element);
-        }
-        element = element.parentElement;
-      }
-      candidates.push(window);
-      return candidates;
-    };
-    const scrollBounds = (candidate) => {
-      if (candidate === window) {
-        return {
-          top: 0,
-          left: 0,
-          bottom: window.innerHeight,
-          right: window.innerWidth,
-          width: window.innerWidth,
-          height: window.innerHeight,
-        };
-      }
-      const bounds = candidate.getBoundingClientRect();
-      return {
-        top: bounds.top,
-        left: bounds.left,
-        bottom: bounds.bottom,
-        right: bounds.right,
-        width: bounds.width,
-        height: bounds.height,
-      };
-    };
-    const deltaForAxis = (rect, bounds, axis) => {
-      if (axis === "y") {
-        const margin = Math.min(Math.max(18, (rect.height || window.__jusiMirrorLineHeight || 16) * 2), Math.max(0, bounds.height / 3));
-        if (rect.top < bounds.top + margin) {
-          return rect.top - (bounds.top + margin);
-        }
-        if (rect.bottom > bounds.bottom - margin) {
-          return rect.bottom - (bounds.bottom - margin);
-        }
-        return 0;
-      }
-      const margin = Math.min(18, Math.max(0, bounds.width / 4));
-      if (rect.left < bounds.left + margin) {
-        return rect.left - (bounds.left + margin);
-      }
-      if (rect.right > bounds.right - margin) {
-        return rect.right - (bounds.right - margin);
-      }
-      return 0;
-    };
-    const applyScroll = (candidate, axis, delta) => {
-      if (!delta) {
-        return false;
-      }
-      if (candidate === window) {
-        const root = scrollingElement();
-        const oldX = window.scrollX;
-        const oldY = window.scrollY;
-        const maxX = Math.max(0, root.scrollWidth - window.innerWidth);
-        const maxY = Math.max(0, root.scrollHeight - window.innerHeight);
-        const nextX = axis === "x" ? Math.max(0, Math.min(maxX, oldX + delta)) : oldX;
-        const nextY = axis === "y" ? Math.max(0, Math.min(maxY, oldY + delta)) : oldY;
-        if (Math.abs(nextX - oldX) < 0.5 && Math.abs(nextY - oldY) < 0.5) {
-          return false;
-        }
-        window.scrollTo(nextX, nextY);
-        return true;
-      }
-      if (axis === "y") {
-        const old = candidate.scrollTop;
-        const max = Math.max(0, candidate.scrollHeight - candidate.clientHeight);
-        const next = Math.max(0, Math.min(max, old + delta));
-        if (Math.abs(next - old) < 0.5) {
-          return false;
-        }
-        candidate.scrollTop = next;
-        return true;
-      }
-      const old = candidate.scrollLeft;
-      const max = Math.max(0, candidate.scrollWidth - candidate.clientWidth);
-      const next = Math.max(0, Math.min(max, old + delta));
-      if (Math.abs(next - old) < 0.5) {
-        return false;
-      }
-      candidate.scrollLeft = next;
-      return true;
-    };
-    const scrollAxisIntoView = (rect, axis) => {
-      for (const candidate of scrollCandidates(axis)) {
-        const bounds = scrollBounds(candidate);
-        const delta = deltaForAxis(rect, bounds, axis);
-        if (applyScroll(candidate, axis, delta)) {
-          return true;
-        }
-      }
-      return false;
-    };
-    const scrollIntoView = (rect) => {
-      if (!shouldAutoScroll || !rect) {
-        return rect;
-      }
-      const movedY = scrollAxisIntoView(rect, "y");
-      const movedX = scrollAxisIntoView(movedY ? rectForBoundary() || rect : rect, "x");
-      if (movedX || movedY) {
-        return rectForBoundary();
-      }
-      return rect;
-    };
-    let rect = scrollIntoView(rectForBoundary());
-    if (!rect) {
-      const caret = document.getElementById("jusi-neovim-mirror-caret");
-      if (caret) {
-        caret.style.display = "none";
-      }
-      return null;
-    }
-    const caret = ensureCaret();
-    caret.style.display = "block";
-    caret.style.left = Math.round(rect.left) + "px";
-    caret.style.top = Math.round(rect.top) + "px";
-    caret.style.width = Math.max(3, Math.round(rect.width || 8)) + "px";
-    caret.style.height = Math.max(2, Math.round(rect.height || 16)) + "px";
-    return {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
-    };
-  })()`;
-}
-
-function mirrorScrollSource(lines: number, index: number | null): string {
-  return `(() => {
-    const requestedIndex = ${index === null ? "null" : Math.max(0, Math.floor(index))};
-    const indexMap = window.__jusiMirrorIndexMap || [];
-    const lineHeight = Number(window.__jusiMirrorLineHeight) || (() => {
-      const style = window.getComputedStyle(document.body || document.documentElement);
-      const parsed = Number.parseFloat(style.lineHeight);
-      return Number.isFinite(parsed) && parsed > 0 ? parsed : 16;
-    })();
-    const nearestMappedIndex = (start, direction) => {
-      let cursor = Math.max(0, Math.min(start, indexMap.length - 1));
-      while (cursor >= 0 && cursor < indexMap.length) {
-        if (indexMap[cursor]) {
-          return cursor;
-        }
-        cursor += direction;
-      }
-      return null;
-    };
-    const boundaryForIndex = (target) => {
-      if (target === null || indexMap.length === 0) {
-        return null;
-      }
-      if (target <= 0) {
-        const first = nearestMappedIndex(0, 1);
-        return first === null ? null : indexMap[first];
-      }
-      if (target >= indexMap.length) {
-        const last = nearestMappedIndex(indexMap.length - 1, -1);
-        return last === null ? null : indexMap[last];
-      }
-      const mapped = indexMap[target];
-      if (mapped) {
-        return mapped;
-      }
-      const next = nearestMappedIndex(target, 1);
-      if (next !== null) {
-        return indexMap[next];
-      }
-      const previous = nearestMappedIndex(target - 1, -1);
-      return previous === null ? null : indexMap[previous];
-    };
-    const canScrollElement = (element) => {
-      if (!element || element.nodeType !== Node.ELEMENT_NODE) {
-        return false;
-      }
-      const style = window.getComputedStyle(element);
-      if (!["auto", "scroll", "overlay"].includes(style.overflowY)) {
-        return false;
-      }
-      return element.scrollHeight > element.clientHeight + 1;
-    };
-    const delta = ${lines} * lineHeight;
-    const tryScrollElement = (element) => {
-      const old = element.scrollTop;
-      const max = Math.max(0, element.scrollHeight - element.clientHeight);
-      const next = Math.max(0, Math.min(max, old + delta));
-      if (Math.abs(next - old) < 0.5) {
-        return false;
-      }
-      element.scrollTop = next;
-      return true;
-    };
-    const boundary = boundaryForIndex(requestedIndex);
-    let element = boundary && boundary.node ? boundary.node.parentElement : null;
-    while (element && element !== document.documentElement) {
-      if (canScrollElement(element) && tryScrollElement(element)) {
-        return element.scrollTop;
-      }
-      element = element.parentElement;
-    }
-    const root = document.scrollingElement || document.documentElement || document.body;
-    const old = window.scrollY;
-    const max = Math.max(0, root.scrollHeight - window.innerHeight);
-    const next = Math.max(0, Math.min(max, old + delta));
-    if (Math.abs(next - old) >= 0.5) {
-      window.scrollTo(window.scrollX, next);
-    }
-    return window.scrollY;
-  })()`;
-}
-
-function mirrorClickIndexSource(x: number, y: number): string {
-  return `(() => {
-    const x = ${x};
-    const y = ${y};
-    const indexMap = window.__jusiMirrorIndexMap || [];
-    const rangeFromPoint = () => {
-      if (typeof document.caretRangeFromPoint === "function") {
-        return document.caretRangeFromPoint(x, y);
-      }
-      if (typeof document.caretPositionFromPoint === "function") {
-        const position = document.caretPositionFromPoint(x, y);
-        if (!position) {
-          return null;
-        }
-        const range = document.createRange();
-        range.setStart(position.offsetNode, position.offset);
-        range.collapse(true);
-        return range;
-      }
-      return null;
-    };
-    const range = rangeFromPoint();
-    if (!range) {
-      return null;
-    }
-    let node = range.startContainer;
-    let offset = range.startOffset;
-    range.detach?.();
-    if (!node) {
-      return null;
-    }
-    if (node.nodeType !== Node.TEXT_NODE) {
-      const child = node.childNodes ? node.childNodes[Math.min(offset, node.childNodes.length - 1)] : null;
-      if (child && child.nodeType === Node.TEXT_NODE) {
-        node = child;
-        offset = 0;
-      } else {
-        return null;
-      }
-    }
-    let bestPrevious = null;
-    let bestNext = null;
-    for (let index = 0; index < indexMap.length; index += 1) {
-      const entry = indexMap[index];
-      if (!entry || entry.node !== node) {
-        continue;
-      }
-      if (entry.offset <= offset) {
-        const distance = offset - entry.offset;
-        if (!bestPrevious || distance < bestPrevious.distance) {
-          bestPrevious = { index, distance };
-        }
-      } else {
-        const distance = entry.offset - offset;
-        if (!bestNext || distance < bestNext.distance) {
-          bestNext = { index, distance };
-        }
-      }
-    }
-    return bestPrevious ? bestPrevious.index : bestNext ? bestNext.index : null;
-  })()`;
-}
-
-function mirrorLinkTargetSource(index: number): string {
-  return `(() => {
-    const indexMap = window.__jusiMirrorIndexMap || [];
-    const requestedIndex = Math.max(0, Math.floor(${index}));
-    const nearestMappedIndex = (start, direction) => {
-      let cursor = Math.max(0, Math.min(start, indexMap.length - 1));
-      while (cursor >= 0 && cursor < indexMap.length) {
-        if (indexMap[cursor]) {
-          return cursor;
-        }
-        cursor += direction;
-      }
-      return null;
-    };
-    const targetIndex = indexMap[requestedIndex] ? requestedIndex : nearestMappedIndex(requestedIndex, -1) ?? nearestMappedIndex(requestedIndex, 1);
-    if (targetIndex === null || !indexMap[targetIndex] || !indexMap[targetIndex].node) {
-      return false;
-    }
-    let element = indexMap[targetIndex].node.parentElement;
-    const link = element && element.closest ? element.closest("a[href], area[href]") : null;
-    if (!link) {
-      return null;
-    }
-    const rects = Array.from(link.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
-    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-    const visibleRect = rects.find((rect) =>
-      rect.right > 0 && rect.bottom > 0 && rect.left < viewportWidth && rect.top < viewportHeight
-    ) || rects[0];
-    if (!visibleRect) {
-      return null;
-    }
-    return {
-      href: typeof link.href === "string" ? link.href : null,
-      x: Math.max(0, Math.floor(visibleRect.left + Math.min(visibleRect.width / 2, Math.max(1, visibleRect.width - 1)))),
-      y: Math.max(0, Math.floor(visibleRect.top + Math.min(visibleRect.height / 2, Math.max(1, visibleRect.height - 1)))),
-    };
-  })()`;
-}
-
-function mirrorActivateLinkSource(index: number): string {
-  return `(() => {
-    const indexMap = window.__jusiMirrorIndexMap || [];
-    const requestedIndex = Math.max(0, Math.floor(${index}));
-    const nearestMappedIndex = (start, direction) => {
-      let cursor = Math.max(0, Math.min(start, indexMap.length - 1));
-      while (cursor >= 0 && cursor < indexMap.length) {
-        if (indexMap[cursor]) {
-          return cursor;
-        }
-        cursor += direction;
-      }
-      return null;
-    };
-    const targetIndex = indexMap[requestedIndex] ? requestedIndex : nearestMappedIndex(requestedIndex, -1) ?? nearestMappedIndex(requestedIndex, 1);
-    if (targetIndex === null || !indexMap[targetIndex] || !indexMap[targetIndex].node) {
-      return false;
-    }
-    const element = indexMap[targetIndex].node.parentElement;
-    const link = element && element.closest ? element.closest("a[href], area[href]") : null;
-    if (!link) {
-      return false;
-    }
-    link.click();
-    return true;
-  })()`;
-}
-
-function mirrorHash(mirror: MirrorDocument): string {
-  return mirror.lines.map((line) => line.text).join("\n");
-}
-
 async function refreshMirror(host: HTMLDivElement): Promise<void> {
-  const startedAt = performance.now();
   const bufferId = Number(host.dataset.bufferId);
-  const browser = host.querySelector("webview") as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
-  if (!Number.isFinite(bufferId) || !browser || typeof browser.executeJavaScript !== "function") {
+  const surface = surfaceFor(host);
+  const job = textJobs.get(bufferId);
+  if (!surface?.ready) return;
+  if (host.dataset.textSource !== "worker") {
+    const port = browserPort(bufferId), target = port?.read();
+    if (port && target) await browserInteraction(port, target, { kind: 'retry' });
     return;
   }
-  try {
-    const mirror = await browser.executeJavaScript(mirrorExtractorSource()) as MirrorDocument;
-    const hash = mirrorHash(mirror);
-    if (mirrorHashes.get(bufferId) === hash) {
-      return;
-    }
-    const version = (mirrorVersions.get(bufferId) ?? 0) + 1;
-    mirror.version = version;
-    mirrorVersions.set(bufferId, version);
-    mirrorHashes.set(bufferId, hash);
-    await window.jusi.updateWebMirror(bufferId, mirror);
-    perfLog({
-      kind: "mirror-refresh",
-      bufferId,
-      ms: roundMs(performance.now() - startedAt),
-      lines: mirror.lines.length,
-      chars: mirror.totalTextLength,
-    });
-  } catch (error) {
-    console.warn("[mirror-refresh-failed]", error);
-    perfLog({
-      kind: "mirror-refresh-error",
-      bufferId: Number.isFinite(bufferId) ? bufferId : null,
-      ms: roundMs(performance.now() - startedAt),
-    });
+  if (!job) return;
+  if (host.dataset.textSource === "worker") {
+    await job.run(async signal => {
+      const ticket = await window.jusi.acquireDocument(bufferId, host.dataset.sessionId ?? "", surface.documentHandle());
+      if (!ticket || signal.aborted) throw new Error("Document changed");
+      if (!await window.jusi.buildWorkerText(ticket)) throw new Error("Worker document changed before commit");
+    }, async () => {});
+    return;
   }
+
 }
 
 function scheduleMirrorRefresh(host: HTMLDivElement): void {
@@ -1964,252 +1036,98 @@ function scheduleMirrorProjection(host: HTMLDivElement, delay: number, autoScrol
   }, delay));
 }
 
-function mirrorPositionForIndex(mirror: MirrorDocument, index: number): { row: number; col: number } | null {
-  if (mirror.lines.length === 0) {
-    return null;
-  }
-  const target = Math.max(0, Math.floor(index));
-  for (const line of mirror.lines) {
-    if (target <= line.endIndex) {
-      return {
-        row: line.lineNumber,
-        col: Math.max(0, Math.min(line.text.length, target - line.startIndex)),
-      };
-    }
-  }
-  const last = mirror.lines[mirror.lines.length - 1];
+function browserPort(bufferId: number): BrowserInteractionPort | undefined {
+  const surface = surfaces.get(bufferId);
+  if (!surface) return;
   return {
-    row: last.lineNumber,
-    col: last.text.length,
+    read: () => {
+      // Interaction consumes the newest authoritative state, independent of paint.
+      const state = pendingRenderState ?? latestState;
+      const view = state?.attachedWebViews.find(view => view.bufferId === bufferId);
+      return surface.ready && view && view.tabId === state?.snapshot.currentTabId
+        && surfaces.get(bufferId) === surface && surface.matches(view) ? view : undefined;
+    },
+    scroll: (lines, index) => surface.scroll(lines, index),
+    region: (index, direction) => surface.region(index, direction),
+    activateLink: index => surface.activateLink(index),
+    hitTest: (x, y) => surface.hitTest(x, y),
+    rebuildText: () => surface.rebuildText(),
+    projectCursor: (mirror, cursor, auto, force) => surface.projectCursor(mirror, cursor, auto, force),
   };
 }
 
-function mirrorIndexForPosition(
-  mirror: MirrorDocument,
-  position: { row: number; col: number },
-  endInclusive = false,
-): number | null {
-  const line = mirror.lines[position.row];
-  if (!line) {
-    return null;
-  }
-  const col = Math.max(0, Math.min(position.col, line.text.length));
-  return line.startIndex + col + (endInclusive && col < line.text.length ? 1 : 0);
-}
-
-async function moveMirrorCursorToClick(host: HTMLDivElement, event: MouseEvent): Promise<void> {
-  const bufferId = Number(host.dataset.bufferId);
-  const view = Number.isFinite(bufferId) ? latestAttachedViews.get(bufferId) : null;
-  const browser = host.querySelector("webview") as HTMLElement | null;
-  const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
-  if (!view || !view.mirror || !browser || !executableBrowser || typeof executableBrowser.executeJavaScript !== "function") {
-    return;
-  }
-
-  await window.jusi.focusWindow(view.windowId);
-
-  if (browser.dataset.domReady !== "1") {
-    return;
-  }
-
-  const rect = browser.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  let index: number | null = null;
+async function moveMirrorCursorToClick(event: BrowserActionTarget & { x: number; y: number }): Promise<void> {
+  const port = browserPort(event.bufferId);
+  const view = port?.read();
+  if (!view || !port || !sameBrowserTarget(view, event)) return;
+  setWebMode(event.bufferId);
   try {
-    index = await executableBrowser.executeJavaScript(mirrorClickIndexSource(x, y)) as number | null;
-  } catch (_error) {
-    return;
-  }
-  if (typeof index !== "number" || !Number.isFinite(index)) {
-    return;
-  }
-  const position = mirrorPositionForIndex(view.mirror, index);
-  if (!position) {
-    return;
-  }
-  await window.jusi.setCursor(view.windowId, position.row, position.col);
+    const position = await browserInteraction(port, event, { kind: 'hit', x: event.x, y: event.y });
+    if (position && view.mirror && view.incarnation !== undefined) await window.jusi.setCursor(view.windowId, position.row, position.col,
+      { bufferId: view.bufferId, sessionId: view.sessionId, incarnation: view.incarnation, revision: view.mirror.version });
+  } catch { /* Navigation revokes in-flight interaction. */ }
 }
 
-async function handleWebScroll(event: { bufferId: number; windowId: number; lines: number }): Promise<void> {
-  const host = persistentViews.get(event.bufferId);
-  const view = latestAttachedViews.get(event.bufferId);
-  const browser = host?.querySelector("webview") as HTMLElement | null;
-  const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
-  if (
-    !host ||
-    !view ||
-    view.windowId !== event.windowId ||
-    !browser ||
-    browser.dataset.domReady !== "1" ||
-    !executableBrowser ||
-    typeof executableBrowser.executeJavaScript !== "function"
-  ) {
-    return;
-  }
+async function handleWebScroll(event: BrowserActionTarget & { lines: number }): Promise<void> {
+  const port = browserPort(event.bufferId);
+  if (!port) return;
+  try { await browserInteraction(port, event, { kind: 'scroll', lines: event.lines }); }
+  catch { /* Navigation revokes in-flight interaction. */ }
+}
 
-  let index: number | null = null;
-  if (view.cursor && view.mirror) {
-    const line = view.mirror.lines[view.cursor.row];
-    if (line) {
-      index = line.startIndex + Math.max(0, Math.min(view.cursor.col, line.text.length));
-    }
-  }
+const regionNavigator = new BrowserRegionNavigator();
+async function handleWebRegion(event: BrowserActionTarget & { direction: number }): Promise<void> {
+  const port = browserPort(event.bufferId);
+  if (!port || event.incarnation === undefined || event.documentRevision === undefined) return;
+  const ticket = { bufferId: event.bufferId, sessionId: event.sessionId, incarnation: event.incarnation, revision: event.documentRevision };
   try {
-    await executableBrowser.executeJavaScript(mirrorScrollSource(event.lines, index));
-  } catch (_error) {
-    return;
-  }
-  await projectMirrorCursor(host, view, view.cursor ?? null, false, true);
+    await regionNavigator.navigate(port, event, event.direction, async () => {
+      return await window.jusi.readBrowserState(event.windowId, ticket) ?? undefined;
+    }, position => window.jusi.setCursor(event.windowId, position.row, position.col, ticket));
+  } catch { /* Navigation revokes in-flight interaction. */ }
 }
 
-async function handleWebOpenLink(event: { bufferId: number; windowId: number }): Promise<void> {
-  const host = persistentViews.get(event.bufferId);
-  const view = latestAttachedViews.get(event.bufferId);
-  const browser = host?.querySelector("webview") as HTMLElement | null;
-  const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
-  if (
-    !host ||
-    !view ||
-    view.windowId !== event.windowId ||
-    !view.cursor ||
-    !view.mirror ||
-    !browser ||
-    browser.dataset.domReady !== "1" ||
-    !executableBrowser ||
-    typeof executableBrowser.executeJavaScript !== "function"
-  ) {
-    return;
-  }
-
-  const line = view.mirror.lines[view.cursor.row];
-  if (!line) {
-    return;
-  }
+async function handleWebOpenLink(event: BrowserActionTarget): Promise<void> {
+  const port = browserPort(event.bufferId);
+  if (!port) return;
   const shouldReturnFocus = webModeBufferId === null;
-  const index = line.startIndex + Math.max(0, Math.min(view.cursor.col, line.text.length));
   try {
-    const target = await executableBrowser.executeJavaScript(mirrorLinkTargetSource(index)) as { href?: string | null } | null;
-    const navigationBrowser = browser as HTMLElement & {
-      loadURL?: (url: string) => void;
-    };
-    if (!target) {
-      return;
-    }
-    const href = typeof target.href === "string" ? target.href : "";
-    if (href !== "" && !href.toLowerCase().startsWith("javascript:") && typeof navigationBrowser.loadURL === "function") {
-      navigationBrowser.loadURL(href);
-      if (shouldReturnFocus) {
-        setTimeout(focusHostSurface, 0);
-        setTimeout(focusHostSurface, 100);
-      }
-      return;
-    }
-    await executableBrowser.executeJavaScript(mirrorActivateLinkSource(index));
-    if (shouldReturnFocus) {
-      setTimeout(focusHostSurface, 0);
-      setTimeout(focusHostSurface, 100);
-    }
-  } catch (_error) {
-    return;
-  }
+    await browserInteraction(port, event, { kind: 'link' });
+    if (shouldReturnFocus && webModeBufferId === null) focusHostSurface();
+  } catch { /* Navigation revokes in-flight interaction. */ }
 }
 
 async function handleWebEnterMode(event: { bufferId: number; windowId: number }): Promise<void> {
+  // Enter can follow a window change before its animation-frame paint. Apply that
+  // authoritative layout first so an older frame cannot immediately steal focus.
+  if (pendingRenderState) {
+    const state = pendingRenderState;
+    pendingRenderState = null;
+    renderState(state);
+  }
   const host = persistentViews.get(event.bufferId);
   const view = latestAttachedViews.get(event.bufferId);
-  const browser = host?.querySelector("webview") as (HTMLElement & { focus?: () => void }) | null;
-  if (!host || !view || view.windowId !== event.windowId || !browser) {
-    return;
-  }
+  const surface = surfaceFor(host);
+  if (!host || !view || view.windowId !== event.windowId || !surface) return;
   setWebMode(event.bufferId);
-  browser.focus?.();
+  surface.focus();
   await projectMirrorCursor(host, view, view.cursor ?? null, false, true);
 }
 
 async function projectMirrorSelection(host: HTMLDivElement, view: AttachedWebView): Promise<void> {
-  const startedAt = performance.now();
-  const bufferId = Number(host.dataset.bufferId);
-  const browser = host.querySelector("webview") as HTMLElement | null;
-  const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
-  if (!browser || !executableBrowser || typeof executableBrowser.executeJavaScript !== "function") {
-    return;
-  }
-  if (browser.dataset.domReady !== "1") {
-    return;
-  }
-
-  if (!view.mirror || !view.selection) {
-    if (Number.isFinite(bufferId) && mirrorSelectionSignatures.get(bufferId) === "clear") {
-      return;
-    }
-    try {
-      await executableBrowser.executeJavaScript(mirrorSelectionClearSource());
-      if (Number.isFinite(bufferId)) {
-        mirrorSelectionSignatures.set(bufferId, "clear");
-      }
-    } catch (_error) {
-      // The webview can become temporarily non-executable while Electron swaps pages.
-    }
-    return;
-  }
-
-  const startLine = view.mirror.lines[view.selection.start.row];
-  const endLine = view.mirror.lines[view.selection.end.row];
-  if (!startLine || !endLine) {
-    if (Number.isFinite(bufferId) && mirrorSelectionSignatures.get(bufferId) === "clear") {
-      return;
-    }
-    try {
-      await executableBrowser.executeJavaScript(mirrorSelectionClearSource());
-      if (Number.isFinite(bufferId)) {
-        mirrorSelectionSignatures.set(bufferId, "clear");
-      }
-    } catch (_error) {
-      // The webview can become temporarily non-executable while Electron swaps pages.
-    }
-    return;
-  }
-
-  let startIndex = view.selection.linewise
-    ? startLine.startIndex
-    : mirrorIndexForPosition(view.mirror, view.selection.start) ?? startLine.startIndex;
-  let endIndex = view.selection.linewise
-    ? endLine.endIndex
-    : mirrorIndexForPosition(view.mirror, view.selection.end, true) ?? endLine.endIndex;
-
-  if (endIndex < startIndex) {
-    const tmp = startIndex;
-    startIndex = endIndex;
-    endIndex = tmp;
-  }
-
-  const signature = `${view.mirror.version}:${startIndex}:${endIndex}:${view.selection.linewise ? 1 : 0}`;
-  if (Number.isFinite(bufferId) && mirrorSelectionSignatures.get(bufferId) === signature) {
-    return;
-  }
-
-  try {
-    await executableBrowser.executeJavaScript(mirrorSelectionProjectionSource(startIndex, endIndex));
-    if (Number.isFinite(bufferId)) {
-      mirrorSelectionSignatures.set(bufferId, signature);
-    }
-    const elapsed = performance.now() - startedAt;
-    if (elapsed >= 15) {
-      perfLog({
-        kind: "mirror-selection",
-        bufferId,
-        ms: roundMs(elapsed),
-        selectedChars: Math.abs(endIndex - startIndex),
-      });
-    }
-  } catch (_error) {
-    return;
-  }
+  const surface = surfaceFor(host);
+  if (!surface?.ready) return;
+  try { await surface.projectSelection(view.mirror, view.selection); } catch { /* Navigation revokes projection. */ }
 }
 
 function updateViewHost(host: HTMLDivElement, view: AttachedWebView): void {
   host.dataset.windowId = String(view.windowId);
+  if (host.dataset.textLayer !== (view.textLayer ?? "auto")) {
+    host.dataset.textLayer = view.textLayer ?? "auto";
+  host.dataset.textSource = view.textSource ?? "dom";
+    textJobs.get(view.bufferId)?.invalidate(view.textLayer !== "off");
+    if (view.textLayer !== "off") scheduleMirrorRefresh(host);
+  }
   const title = host.querySelector(".web-view-box__title");
   if (title) {
     title.textContent = view.title || view.url || "web buffer";
@@ -2223,115 +1141,43 @@ function updateViewHost(host: HTMLDivElement, view: AttachedWebView): void {
       : `buf ${view.bufferId} win ${view.windowId}`;
   }
 
-  const browser = host.querySelector("webview");
-  if (browser && browser.dataset.currentUrl !== view.url) {
-    browser.dataset.currentUrl = view.url;
-    browser.dataset.domReady = "0";
+  if (surfaceFor(host)?.update(view)) {
     webModeFrameStates.delete(view.bufferId);
-    mirrorCursorSignatures.delete(view.bufferId);
-    mirrorSelectionSignatures.delete(view.bufferId);
-    browser.src = view.url;
+
+
   }
 }
 
-async function projectMirrorCursor(
-  host: HTMLDivElement,
-  view: AttachedWebView,
-  cursor: { row: number; col: number } | null,
-  autoScroll = true,
-  force = false,
-): Promise<void> {
-  const startedAt = performance.now();
-  const bufferId = Number(host.dataset.bufferId);
-  const marker = host.querySelector(".web-view-box__mirror-cursor") as HTMLElement | null;
-  if (!marker) {
-    return;
-  }
-  marker.classList.remove("web-view-box__mirror-cursor--visible");
-  const browser = host.querySelector("webview") as HTMLElement | null;
-  const executableBrowser = browser as (HTMLElement & { executeJavaScript?: (code: string) => Promise<unknown> }) | null;
-  if (!browser || !executableBrowser || typeof executableBrowser.executeJavaScript !== "function") {
-    return;
-  }
-  if (browser.dataset.domReady !== "1") {
-    return;
-  }
+async function projectMirrorCursor(host: HTMLDivElement, view: AttachedWebView | null,
+  cursor: { row: number; col: number } | null, autoScroll = true, force = false): Promise<void> {
+  host.querySelector(".web-view-box__mirror-cursor")?.classList.remove("web-view-box__mirror-cursor--visible");
+  const surface = surfaceFor(host);
+  if (!surface?.ready) return;
+  try { await surface.projectCursor(view?.mirror, cursor, autoScroll, force); } catch { /* Navigation revokes projection. */ }
+}
 
-  if (!cursor || !view.mirror) {
-    if (!force && Number.isFinite(bufferId) && mirrorCursorSignatures.get(bufferId) === "clear") {
-      return;
-    }
-    try {
-      await executableBrowser.executeJavaScript(mirrorProjectionClearSource());
-      if (Number.isFinite(bufferId)) {
-        mirrorCursorSignatures.set(bufferId, "clear");
-      }
-    } catch (_error) {
-      // The webview can become temporarily non-executable while Electron swaps pages.
-    }
-    return;
-  }
-  const line = view.mirror.lines[cursor.row];
-  if (!line) {
-    if (!force && Number.isFinite(bufferId) && mirrorCursorSignatures.get(bufferId) === "clear") {
-      return;
-    }
-    try {
-      await executableBrowser.executeJavaScript(mirrorProjectionClearSource());
-      if (Number.isFinite(bufferId)) {
-        mirrorCursorSignatures.set(bufferId, "clear");
-      }
-    } catch (_error) {
-      // The webview can become temporarily non-executable while Electron swaps pages.
-    }
-    return;
-  }
-  const col = Math.max(0, Math.min(cursor.col, line.text.length));
-  const index = line.startIndex + col;
-  const signature = `${view.mirror.version}:${index}:${autoScroll ? 1 : 0}`;
-  if (!force && Number.isFinite(bufferId) && mirrorCursorSignatures.get(bufferId) === signature) {
-    return;
-  }
+function disposeView(bufferId: number, host: HTMLDivElement): void {
+  textJobs.get(bufferId)?.invalidate(false);
+  textJobs.delete(bufferId);
+  clearTimeout(mirrorTimers.get(bufferId));
+  clearTimeout(mirrorProjectionTimers.get(bufferId));
+  mirrorTimers.delete(bufferId);
+  mirrorProjectionTimers.delete(bufferId);
 
-  const token = (mirrorProjectionTokens.get(view.bufferId) ?? 0) + 1;
-  mirrorProjectionTokens.set(view.bufferId, token);
-  let rect: { x: number; y: number; width: number; height: number } | null = null;
-  try {
-    rect = await executableBrowser.executeJavaScript(
-      mirrorProjectionSource(index, autoScroll),
-    ) as { x: number; y: number; width: number; height: number } | null;
-  } catch (_error) {
-    return;
-  }
-  if (mirrorProjectionTokens.get(view.bufferId) !== token || !rect) {
-    try {
-      await executableBrowser.executeJavaScript(mirrorProjectionClearSource());
-      if (Number.isFinite(bufferId)) {
-        mirrorCursorSignatures.set(bufferId, "clear");
-      }
-    } catch (_error) {
-      // The webview can become temporarily non-executable while Electron swaps pages.
-    }
-    return;
-  }
-  if (Number.isFinite(bufferId)) {
-    mirrorCursorSignatures.set(bufferId, signature);
-  }
-  const elapsed = performance.now() - startedAt;
-  if (elapsed >= 15) {
-    perfLog({
-      kind: "mirror-cursor",
-      bufferId,
-      ms: roundMs(elapsed),
-      autoScroll,
-      forced: force,
-      row: cursor.row,
-      col: cursor.col,
-    });
-  }
+
+
+  webModeFrameStates.delete(bufferId);
+  latestAttachedViews.delete(bufferId);
+  persistentViews.delete(bufferId);
+  if (webModeBufferId === bufferId) setWebMode(null);
+  surfaces.get(bufferId)?.dispose();
+  surfaces.delete(bufferId);
+  host.remove();
 }
 
 function parkViewHost(host: HTMLDivElement): void {
+  surfaceFor(host)?.detach();
+  surfaceFor(host)?.resize(800, 600);
   host.classList.add("web-view-box--parked");
   host.style.left = "-20000px";
   host.style.top = "0";
@@ -2343,12 +1189,11 @@ function placeViewHost(host: HTMLDivElement, view: AttachedWebView): void {
   host.classList.remove("web-view-box--parked");
   const bounds = view.gridBounds;
   if (!bounds) {
-    host.style.left = "24px";
-    host.style.top = "24px";
-    host.style.width = "480px";
-    host.style.height = "320px";
+    parkViewHost(host);
     return;
   }
+  surfaceFor(host)?.attach(host);
+  surfaceFor(host)?.resize(bounds.width * cellWidth, bounds.height * cellHeight);
   host.style.left = `${bounds.col * cellWidth}px`;
   host.style.top = `${bounds.row * cellHeight}px`;
   host.style.width = `${bounds.width * cellWidth}px`;
@@ -2371,6 +1216,8 @@ function renderAttachedViews(views: AttachedWebView[]): void {
   });
 
   for (const view of orderedViews) {
+    try { presentationBackends.resolve(view.surface); }
+    catch (error) { console.error("[presentation-backend]", error); continue; }
     active.add(view.bufferId);
     latestAttachedViews.set(view.bufferId, view);
     const host = ensureViewHost(view);
@@ -2388,6 +1235,10 @@ function renderAttachedViews(views: AttachedWebView[]): void {
   }
 
   for (const [bufferId, host] of persistentViews.entries()) {
+    if (latestState && !latestState.presentationBufferIds.includes(bufferId)) {
+      disposeView(bufferId, host);
+      continue;
+    }
     if (active.has(bufferId)) {
       continue;
     }
@@ -2396,12 +1247,7 @@ function renderAttachedViews(views: AttachedWebView[]): void {
       root.appendChild(host);
     }
     void applyWebModeFrame(host, false);
-    void projectMirrorCursor(host, {
-      bufferId,
-      windowId: 0,
-      tabId: null,
-      url: "",
-    }, null);
+    void projectMirrorCursor(host, null, null);
     parkViewHost(host);
   }
 }
@@ -2448,13 +1294,6 @@ function ensureGridLayer(gridId: number): HTMLPreElement {
   const layer = document.createElement("pre");
   layer.className = "grid-layer";
   layer.dataset.gridId = String(gridId);
-  layer.addEventListener("mousedown", (event) => {
-    const target = event.currentTarget as HTMLElement;
-    const windowId = Number(target.dataset.windowId);
-    if (Number.isFinite(windowId)) {
-      void window.jusi.focusWindow(windowId);
-    }
-  });
   persistentGridLayers.set(gridId, layer);
   return layer;
 }
@@ -2508,6 +1347,7 @@ function renderGridLayers(state: RendererSessionState): void {
     active.add(grid.gridId);
     const layer = ensureGridLayer(grid.gridId);
     layer.dataset.windowId = String(window.id);
+    layer.style.pointerEvents = bounds?.mouseEnabled === false ? "none" : "auto";
     const background = state.screen.backgroundColor ?? "#16161d";
     const foreground = resolveDefaultForeground(background, state.screen.foregroundColor);
     renderGridContent(layer, grid, state.screen.highlights, {
@@ -2602,7 +1442,7 @@ function renderMessageLayers(state: RendererSessionState): void {
       visibleEntries.forEach((entry) => {
         const row = document.createElement("div");
         row.className = `message-entry message-entry--${entry.kind || "plain"}`;
-        row.textContent = entry.text;
+        renderOverlayChunks(row, entryChunks(entry), state);
         messageLayer.appendChild(row);
       });
     } else {
@@ -2632,9 +1472,9 @@ function renderMessageLayers(state: RendererSessionState): void {
     const ruler = state.messages.ruler;
     const visible = !state.cmdline.visible && visibleMessageEntries(state).length === 0 && (showmode !== "" || showcmd !== "" || ruler !== "");
     if (visible) {
-      showmodeSlot.textContent = showmode;
-      showcmdSlot.textContent = showcmd;
-      rulerSlot.textContent = ruler;
+      renderOverlayChunks(showmodeSlot, state.messages.statusChunks?.showmode ?? [{ highlightId: 0, text: showmode }], state);
+      renderOverlayChunks(showcmdSlot, state.messages.statusChunks?.showcmd ?? [{ highlightId: 0, text: showcmd }], state);
+      renderOverlayChunks(rulerSlot, state.messages.statusChunks?.ruler ?? [{ highlightId: 0, text: ruler }], state);
       statusLayer.classList.add("message-status-layer--visible");
     } else {
       statusLayer.classList.remove("message-status-layer--visible");
@@ -2673,7 +1513,7 @@ function renderCmdlineBlock(state: RendererSessionState): void {
     row.className = "cmdline-block-line";
     row.style.height = `${cellHeight}px`;
     row.style.lineHeight = `${cellHeight}px`;
-    row.textContent = line;
+    renderOverlayChunks(row, line, state);
     block.appendChild(row);
   });
   block.classList.add("cmdline-block-layer--visible");
@@ -2688,6 +1528,21 @@ function layoutTerminalSurfaces(state: RendererSessionState): void {
       element.style.height = `${gridHeight}px`;
     }
   }
+}
+
+let nativeViewportSequence = 0;
+function reportNativeViewport(state: RendererSessionState): void {
+  if (!state.nativeLayoutGeneration) return;
+  const stage = document.querySelector(".stage");
+  if (!(stage instanceof HTMLElement)) return;
+  const rect = stage.getBoundingClientRect();
+  const blocked = state.cmdline.visible || state.popupmenu.visible || state.messages.historyVisible
+    || visibleCmdlineBlockLines(state).length > 0;
+  // The one-line message/status area starts below this viewport; it does not occlude a float.
+  void window.jusi.reportNativeViewport({ generation: state.nativeLayoutGeneration,
+    sequence: ++nativeViewportSequence, x: rect.left, y: rect.top,
+    width: rect.width, height: Math.min(rect.height, terminalGridHeight(state)),
+    cellWidth, cellHeight, blocked });
 }
 
 function renderState(state: RendererSessionState): void {
@@ -2727,6 +1582,7 @@ function renderState(state: RendererSessionState): void {
         )
       : null;
     if (
+      !state.screen.busy && !state.cmdline.visible &&
       activeGridCursor &&
       activeWindow &&
       windowKind(state, activeWindow) !== "web" &&
@@ -2737,15 +1593,19 @@ function renderState(state: RendererSessionState): void {
       const row = bounds?.row ?? activeWindow.row!;
       const col = bounds?.col ?? activeWindow.col!;
       const cursorStyle = state.screen.mode.cursor;
+      const grid = state.grids.find(grid => grid.gridId === activeGridCursor.gridId) ?? state.screen;
+      const cell = cursorCell(grid.runs[activeGridCursor.row] ?? [], activeGridCursor.col);
       applyCursorStyle(
         cursor,
         cursorStyle,
         (col + activeGridCursor.col) * cellWidth,
         (row + activeGridCursor.row) * cellHeight,
-        cursorColorForStyle(cursorStyle, state.screen.highlights, { foreground, background }),
+        cursorHighlight(cursorStyle, state.screen.highlights[cell.highlightId], state.screen.highlights, { foreground, background }),
+        { text: cell.text, width: cell.columns * cellWidth, offset: cell.offset * cellWidth },
+        JSON.stringify([activeGridCursor, cell.text, state.screen.mode.name]),
       );
     } else {
-      cursor.style.display = "none";
+      hideCursor(cursor);
     }
   }
 
@@ -2761,6 +1621,7 @@ function renderState(state: RendererSessionState): void {
     pre.textContent = "";
   }
 
+  let commandPopupLeft: number | undefined;
   const cmdline = document.getElementById("cmdline-layer");
   if (cmdline) {
     const cmdlineElement = cmdline as HTMLElement;
@@ -2771,23 +1632,43 @@ function renderState(state: RendererSessionState): void {
     cmdlineElement.style.lineHeight = `${cellHeight}px`;
     cmdlineElement.style.fontSize = `${terminalFontSize}px`;
     if (state.cmdline.visible) {
-      const stage = document.querySelector(".stage");
-      const maxColumns = stage instanceof HTMLElement ? Math.floor(stage.clientWidth / cellWidth) : state.screen.cols;
-      const view = formatCmdline(state.cmdline, maxColumns);
-      cmdline.textContent = view.text;
-      const commandCursor = document.createElement("span");
+      const view = commandText(state.cmdline);
+      const content = document.createElement('span');
+      content.className = 'cmdline-content';
+      renderOverlayChunks(content, view.chunks, state);
+      const commandCursor = cmdline.querySelector<HTMLElement>(".cmdline-cursor") ?? document.createElement("span");
+      cmdline.replaceChildren(content);
+      const cursorLeft = renderedTextOffset(content, view.cursorIndex);
+      const scroll = Math.max(0, cursorLeft + cellWidth - cmdlineElement.clientWidth);
+      content.style.display = 'inline-block';
+      content.style.transform = `translateX(${-scroll}px)`;
+      if (state.popupmenu.grid === -1) {
+        commandPopupLeft = renderedTextOffset(content, view.prefixLength
+          + byteOffsetToIndex(state.cmdline.content, state.popupmenu.col)) - scroll;
+      }
+      const text = chunksText(view.chunks);
+      const glyph = new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(text.slice(view.cursorIndex))[Symbol.iterator]().next().value?.segment ?? ' ';
+      let index = 0;
+      const chunk = view.chunks.find(chunk => { index += chunk.text.length; return index > view.cursorIndex; });
+      const attrs = chunk?.attrs ?? state.screen.highlights[chunk?.highlightId ?? 0];
+      const glyphWidth = Math.max(cellWidth, renderedTextOffset(content, view.cursorIndex + glyph.length) - cursorLeft);
       commandCursor.className = "cmdline-cursor";
       const cursorStyle = state.screen.mode.cursor;
       applyCursorStyle(
         commandCursor,
         cursorStyle,
-        view.cursorColumn * cellWidth,
+        cursorLeft - scroll,
         0,
-        cursorColorForStyle(cursorStyle, state.screen.highlights, { foreground, background }),
+        cursorHighlight(cursorStyle, attrs, state.screen.highlights, { foreground, background }),
+        {text: glyph, width: glyphWidth, offset: 0},
+        JSON.stringify([state.cmdline.level, view.cursorIndex, text, state.screen.mode.name]),
       );
+      if (state.screen.busy) hideCursor(commandCursor);
       cmdline.appendChild(commandCursor);
       cmdline.classList.add("cmdline-layer--visible");
     } else {
+      const commandCursor = cmdline.querySelector<HTMLElement>(".cmdline-cursor");
+      if (commandCursor) hideCursor(commandCursor);
       cmdline.textContent = "";
       cmdline.classList.remove("cmdline-layer--visible");
     }
@@ -2813,7 +1694,11 @@ function renderState(state: RendererSessionState): void {
         if (index === state.popupmenu.selected) {
           row.classList.add("popupmenu-item--selected");
         }
-        row.textContent = item.word;
+        row.textContent = [item.word, item.kind, item.menu].filter(Boolean).join('  ');
+        if (index === state.popupmenu.selected && item.info) {
+          const info = document.createElement('div'); info.className = 'popupmenu-info';
+          info.textContent = item.info; row.appendChild(info);
+        }
         popup.appendChild(row);
       });
       const popupHeight = popup.getBoundingClientRect().height || (state.popupmenu.items.length * cellHeight);
@@ -2826,6 +1711,7 @@ function renderState(state: RendererSessionState): void {
         commandAreaTop,
         popupHeight,
         popupWidth,
+        commandAnchorLeft: commandPopupLeft,
       });
       popup.style.left = `${placement.left}px`;
       popup.style.top = `${placement.top}px`;
@@ -2843,6 +1729,7 @@ function renderState(state: RendererSessionState): void {
   renderGridLayers(state);
   renderWindowFrames(state);
   renderAttachedViews(state.attachedWebViews);
+  reportNativeViewport(state);
   noteRenderPerf(state, performance.now() - renderStartedAt);
 }
 
@@ -2864,36 +1751,27 @@ function scheduleRenderState(state: RendererSessionState): void {
 
 function installPointerRouting(): void {
   const stage = document.querySelector(".stage");
-  if (!stage) {
-    return;
-  }
-
-  stage.addEventListener(
-    "mousedown",
-    (event) => {
-      const mouseEvent = event as MouseEvent;
-      if (!latestState) {
-        return;
+  if (!(stage instanceof HTMLElement)) return;
+  installGridMouse(stage, {
+    metrics: () => ({ width: cellWidth, height: cellHeight }),
+    blocked: () => !latestState || latestState.cmdline.visible || latestState.popupmenu.visible
+      || latestState.messages.historyVisible || visibleCmdlineBlockLines(latestState).length > 0,
+    activate: () => { setWebMode(null); focusHostSurface(); },
+    send: input => window.jusi.sendMouse(input),
+    target: element => {
+      if (!(element instanceof Element) || !latestState?.snapshot.currentTabId) return null;
+      const layer = element.closest<HTMLElement>('.grid-layer');
+      if (layer) {
+        const owner = latestState.snapshot.windows.find(w => w.id === Number(layer.dataset.windowId)
+          && w.gridId === Number(layer.dataset.gridId) && w.tabId === latestState!.snapshot.currentTabId);
+        if (!owner || owner.gridBounds?.mouseEnabled === false) return null;
+        return { element: layer, grid: owner.gridId!, windowId: owner.id, tabId: owner.tabId };
       }
-      const rect = stage.getBoundingClientRect();
-      const hit = hitTestWindow(
-        latestState,
-        mouseEvent.clientX - rect.left,
-        mouseEvent.clientY - rect.top,
-      );
-      if (!hit) {
-        return;
-      }
-      if (windowKind(latestState, hit) !== "text") {
-        return;
-      }
-      setWebMode(null);
-      void window.jusi.focusWindow(hit.id);
-      event.preventDefault();
-      event.stopPropagation();
+      if (!element.closest('#terminal-screen') && element.id !== 'grid-layer-root') return null;
+      const terminal = document.getElementById('terminal-screen');
+      return terminal ? { element: terminal, grid: 1, tabId: latestState.snapshot.currentTabId } : null;
     },
-    true,
-  );
+  });
 }
 
 function isWindowCommandFollower(key: string): boolean {
@@ -3006,7 +1884,7 @@ function encodeKey(event: KeyboardEvent): string | null {
     case "Backspace":
       return "<BS>";
     case "Tab":
-      return "<Tab>";
+      return event.shiftKey ? "<S-Tab>" : "<Tab>";
     case "ArrowUp":
       return "<Up>";
     case "ArrowDown":
@@ -3040,7 +1918,8 @@ function dismissCommandMessagePager(): void {
   if (!signature) {
     return;
   }
-  messagePagerDismissedSignature = signature;
+  messagePagerDismissedRevision = latestState.messages.version;
+  messagePagerLineCount = 0;
   messagePagerScroll = 0;
   scheduleRenderState(latestState);
 }
@@ -3068,12 +1947,13 @@ function scrollCommandMessagePager(delta: number): void {
 }
 
 async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boolean> {
-  if (!latestState || event.metaKey || isModifierOnlyKey(event.key)) {
+  if (!latestState || latestState.cmdline.visible || hasInteractiveMessage(latestState)
+    || event.metaKey || isModifierOnlyKey(event.key)) {
     return false;
   }
 
   const signature = commandMessageSignature(latestState);
-  if (!signature || signature === messagePagerDismissedSignature) {
+  if (!signature) {
     return false;
   }
 
@@ -3088,7 +1968,7 @@ async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boo
   const lowerKey = key.toLowerCase();
 
   if (key === "Escape" || lowerKey === "q") {
-    dismissCommandMessagePager();
+    await dismissCommandMessagePagerWithInput(event);
     return true;
   }
 
@@ -3223,6 +2103,7 @@ function installResizeSync(): void {
   };
 
   const observer = new ResizeObserver(() => {
+    void window.jusi.invalidateNativeViewport();
     sync();
   });
   requestGridResize = sync;
@@ -3240,17 +2121,67 @@ async function boot(): Promise<void> {
   applyTerminalFontSize(loadTerminalFontSize(), false);
   const initial = await window.jusi.getInitialState();
   renderState(initial);
+  window.jusi.onNativePopupControls((controls) => {
+    document.getElementById("native-popup-controls")?.remove();
+    const root = document.createElement("div"); root.id = "native-popup-controls";
+    for (const control of controls) {
+      if (control.generation !== latestState?.nativeLayoutGeneration) continue;
+      const bar = document.createElement("div");
+      bar.className = "native-popup-control"; bar.dataset.bufferId = String(control.bufferId);
+      bar.style.cssText = `position:fixed;left:${control.x}px;top:${control.y}px;width:${control.width}px;height:${control.height}px;z-index:2000000;display:flex;align-items:center;background:#202634;color:white;font:12px sans-serif;`;
+      const label = document.createElement("span");
+      label.textContent = `${control.scope} · ${control.origin}`;
+      label.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+      label.title = label.textContent;
+      const close = document.createElement("button"); close.textContent = "Close";
+      close.style.cssText = "height:100%;padding:0 8px;font:inherit;line-height:1";
+      close.onclick = () => { void window.jusi.closeNativePopup(control.token); };
+      const status = document.createElement("button"); status.className = "native-popup-text-status";
+      status.type = "button";
+      status.disabled = control.textStatus === "disabled" || control.textStatus === "building";
+      status.title = "Click to rebuild the text layer";
+      status.onclick = () => { void window.jusi.retryNativeText(control.token); };
+      status.dataset.status = control.textStatus;
+      status.textContent = ({ idle: "Text pending", building: "Building text…", ready: "Text ready",
+        disabled: "Text off", error: "Text failed · retry", limited: "Text limit reached · retry" })[control.textStatus];
+      status.style.cssText = "padding:0 8px;white-space:nowrap";
+      status.setAttribute("aria-live", "polite");
+      bar.append(label, status, close);
+      if (!latestState?.debugUi) bar.style.display = "none";
+      root.append(bar);
+    }
+    document.body.append(root);
+    // Do not reveal native content until its trusted controls have been laid out.
+    requestAnimationFrame(() => {
+      if (document.getElementById("native-popup-controls") !== root) return;
+      for (const control of controls) {
+        if (control.generation === latestState?.nativeLayoutGeneration)
+          void window.jusi.acknowledgeNativePopup(control.token, control.generation);
+      }
+    });
+  });
   window.jusi.onStateChanged((state) => {
     scheduleRenderState(state);
   });
+  window.jusi.onBrowserPointer(event => { void moveMirrorCursorToClick(event); });
   window.jusi.onWebScroll((event) => {
     void handleWebScroll(event);
   });
-  window.jusi.onWebOpenLink((event) => {
+  window.jusi.onBrowserRefresh(event => { const port=browserPort(event.bufferId); if (port) void browserInteraction(port,event,{kind:'retry'}).catch(()=>{}); });
+  window.jusi.onWebRegion(event => { void handleWebRegion(event); });
+window.jusi.onWebOpenLink((event) => {
     void handleWebOpenLink(event);
   });
   window.jusi.onWebEnterMode((event) => {
     void handleWebEnterMode(event);
+  });
+  window.jusi.onBrowserLinkSelected(({ guestId, token }) => {
+    for (const [bufferId, surface] of surfaces) {
+      if (!surface.ready || surface.documentHandle() !== guestId) continue;
+      const host = persistentViews.get(bufferId);
+      if (host) void window.jusi.openBrowserLink(guestId, token, bufferId, host.dataset.sessionId ?? "");
+      break;
+    }
   });
   window.jusi.onLeaveWebMode(() => {
     setWebMode(null);
@@ -3279,3 +2210,8 @@ async function boot(): Promise<void> {
 }
 
 void boot();
+
+// Input restarts the initial visible interval, even when the cursor does not move.
+window.addEventListener('keydown', () => {
+  for (const cursor of document.querySelectorAll<HTMLElement>('#terminal-cursor, .cmdline-cursor')) restartCursorBlink(cursor);
+}, {capture: true});

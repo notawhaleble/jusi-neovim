@@ -1,0 +1,85 @@
+# Working agreement
+
+Read `AGENT.md` for engineering invariants, then `docs/implementation/STATUS.md`
+and `docs/implementation/requirements.json` before changing code.
+
+This is a Neovim presentation host. Web browsing is one provider. Keep Neovim
+state authoritative and use explicit window/grid identities. Providers are
+trusted installed code; their documents and extraction results are untrusted.
+
+## Session protocol
+
+1. Inspect `git status --short` and preserve unrelated edits. Do not reset the tree.
+2. Run `npm run harness` to see incomplete requirements and the next milestone.
+3. Read the relevant ADR and acceptance cases in `docs/implementation/PLAN.md`.
+4. Implement one coherent milestone, including its integration and error paths.
+5. For implementation milestones, run `npm run check`. For guest, focus, text lifecycle, or permission changes,
+   also run `npm run smoke:electron` on a desktop (Linux: `xvfb-run -a`). Inspect
+   `.local/review/presentation.png` and exercise affected interactive workflows.
+6. Update STATUS with exact checks, failures, known limits, and the next step.
+   Update requirements evidence only after verification. Passing infrastructure
+   checks does not mean browser safety parity or all requirements are complete.
+7. Keep future work in implementation docs, current behavior in architecture
+   docs, and durable decisions in `docs/decisions/`.
+
+Do not silently enable shell expansion for provider commands, expose Neovim IPC
+to documents, disable TLS verification, reuse Chrome's live profile directory,
+or claim browser security equivalence without the release-gate evidence.
+
+No publishing or remote repository creation is needed for local implementation.
+Package directories must remain extractable into independent repositories.
+
+## Testing delegation and cost
+
+This is a standing request to delegate substantial routine verification to a
+sub-agent. Keep architecture, implementation decisions, difficult debugging and
+final acceptance with the primary agent.
+
+- Use one test agent, explicitly selecting `gpt-6-luna` with `low` reasoning.
+  Give it a fresh context (`fork_turns: "none"` where supported) and a short,
+  self-contained brief: repository path, changed behavior/files, exact commands,
+  runtime environment, expected artifacts and known diagnostic messages. On this
+  machine, Node 24 is selected with `PATH=/opt/homebrew/opt/node@24/bin:$PATH`.
+- Delegate a full check suite, desktop/package smoke, or a substantial log-triage
+  job. Run a single quick focused command directly when delegation overhead would
+  exceed its value. Do not spawn an agent merely to wait for one command.
+- The test agent runs only the assigned checks, sequentially, and does not edit
+  source, tests, fixtures, dependencies or implementation evidence. It may write
+  test logs to `.local/review/`. No recursive delegation. It reads this agreement
+  and relevant invariants; it need not reread the entire roadmap for execution-only
+  work. It must not interpret this section as a request to spawn another agent.
+- Freeze the code being verified. Do not edit it, run another build, or launch a
+  competing desktop workflow while verification is running. Independent planning
+  or reading may continue. The primary agent does not repeat the same checks just
+  to confirm the test agent's report.
+- Return a concise report: commands and exit codes, failure location and a short
+  relevant excerpt, log/artifact paths, and any checks not run. Inspect full logs
+  only where a failure needs investigation. Never equate an infrastructure pass
+  with requirement completion.
+- Stop on an unexpected failure and report it to the primary agent. No speculative
+  fixes or blind reruns. The primary diagnoses the cause and assigns the next
+  focused check; at most one targeted rerun for a specifically identified transient
+  condition before escalating again.
+- If the requested model/delegation is unavailable, state that briefly and execute
+  the assigned checks directly. Do not silently spawn a more expensive model.
+
+Use focused checks while implementing, then the required suite once at the coherent
+milestone boundary. A new change, failure or unresolved concern may justify another
+run. Package smoke is required when packaging, shipped runtime/resources, preload,
+Electron security configuration or package-specific behavior changes; otherwise run
+it at a browser integration/release checkpoint rather than every small slice.
+Keep required desktop and interactive verification for affected behavior. Delegate
+interactive work only if the child has the needed tools; otherwise the primary does
+it. Do not copy and modify an entire manual smoke harness for routine verification;
+prefer a reusable review mode and escalate missing harness support.
+
+For instructions/documentation-only changes, use `npm run harness`, diff review and
+`git diff --check`; do not run build, desktop or packaged suites unless the changed
+content affects their execution. Record this scope accurately in the handoff.
+
+## Project scope
+
+Non-browser provider implementations belong in their own repositories and separate
+sessions. The existing Markdown test package is retained as API conformance evidence;
+do not expand it here. Current implementation work focuses on host/core and browser
+functionality. A jusi-neovim plugin-authoring skill is deferred until explicitly requested.

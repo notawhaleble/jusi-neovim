@@ -8,4 +8,5 @@ export * from "./bridge/redraw-translator.js";
 export * from "./bridge/notification-router.js";
 export * from "./bridge/rpc-session.js";
 export * from "./bridge/spawn-config.js";
-export * from "./bridge/promised-client.js";
+export * from "./bridge/nvim-client.js";
+export { PromisedNvimRpcClient } from "./bridge/promised-client.js";

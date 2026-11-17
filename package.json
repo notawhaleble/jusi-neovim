@@ -13,7 +13,21 @@
     "dist:linux": "npm run build && npm run prepare:linux-icons && electron-builder --linux AppImage --publish never",
     "dist:linux:x64": "npm run build && npm run prepare:linux-icons && electron-builder --linux AppImage --x64 --publish never",
     "smoke:live": "npm run build && node dist/smoke/live-session.js",
-    "test": "npm run build && node src/test/run-tests.mjs"
+    "test": "npm run build && node src/test/run-tests.mjs",
+    "test:providers": "nvim --headless -u NONE -l scripts/test-providers.lua && nvim --headless -u NONE -l scripts/test-native-child.lua && nvim --headless -u NONE -l scripts/test-browser-status.lua && nvim --headless -u NONE -l scripts/test-browser-location.lua",
+    "check": "npm run harness && npm test && npm run test:markdown && npm run test:providers && npm run test:packages:native && npm run test:workers && npm run test:documents && npm run smoke:live",
+    "smoke:electron": "npm run build && node scripts/run-smoke-electron.mjs",
+    "harness": "node scripts/harness.mjs",
+    "check:release": "node scripts/harness.mjs --release",
+    "test:documents": "nvim --headless -u NONE -l scripts/test-document.lua && nvim --headless -u NONE -l scripts/test-selection.lua",
+    "smoke:package": "node scripts/smoke-package.mjs",
+    "test:packages": "node scripts/test-packages.mjs",
+    "test:packages:native": "node scripts/test-packages.mjs --native-only",
+    "test:workers": "nvim --headless -u NONE -l scripts/test-workers.lua && node scripts/test-worker-lifecycle.mjs && nvim --headless -u NONE -l scripts/test-worker-documents.lua && nvim --headless -u NONE -l scripts/test-worker-navigation.lua && nvim --headless -u NONE -l scripts/test-worker-snapshots.lua",
+    "test:markdown": "npm test --prefix packages/jusi-markdown.nvim",
+    "smoke:profiles": "npm run build && node scripts/run-smoke-profiles.mjs",
+    "smoke:adoption": "npm run build && node scripts/run-smoke-adoption.mjs",
+    "dist:linux:portable:x64": "npm run build && npm run prepare:linux-icons && electron-builder --linux tar.gz --x64 --publish never"
   },
   "build": {
     "appId": "dev.jusi.neovim",
@@ -29,7 +43,8 @@
       "src/renderer/index.html",
       "runtime/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "packages/jusi-web.nvim/**/*"
     ],
     "extraMetadata": {
       "main": "dist/electron/main.js"
@@ -57,13 +72,16 @@
     }
   },
   "dependencies": {
-    "promised-neovim-client": "^2.0.2"
+    "@msgpack/msgpack": "3.1.3"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",
-    "electron": "^38.3.0",
-    "electron-builder": "^26.8.1",
-    "tsx": "^4.20.3",
+    "electron": "44.5.0",
+    "electron-builder": "26.15.3",
     "typescript": "^5.9.3"
-  }
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "description": "Neovim presentation host with optional rich content providers"
 }

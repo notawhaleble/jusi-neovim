@@ -26,6 +26,7 @@ function testExternalCmdlinePopupSitsAboveCommandArea() {
     },
     stage: { width: 900, height: 720, cellWidth: 9, cellHeight: 18 },
     commandAreaHeight: 18,
+    commandAnchorLeft: 17,
     popupHeight: 48,
   });
 
@@ -55,6 +56,7 @@ function testExternalCmdlinePopupFitsAvailableViewport() {
     },
     stage: { width: 300, height: 180, cellWidth: 10, cellHeight: 18 },
     commandAreaHeight: 18,
+    commandAnchorLeft: 508,
     popupHeight: 720,
     popupWidth: 160,
   });
@@ -85,6 +87,7 @@ function testExternalCmdlinePopupUsesActualCommandAreaTop() {
     },
     stage: { width: 900, height: 729, cellWidth: 9, cellHeight: 18 },
     commandAreaHeight: 18,
+    commandAnchorLeft: 17,
     commandAreaTop: 702,
     popupHeight: 72,
     popupWidth: 160,

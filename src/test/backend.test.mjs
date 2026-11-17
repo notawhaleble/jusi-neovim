@@ -1,0 +1,52 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { BackendRegistry } from "../../dist/presentation/backend-registry.js";
+import { webBackend } from "../../dist/backends/web/definition.js";
+import { WebBufferRegistry } from "../../dist/core/web-buffer-registry.js";
+import { registerDirectoryProtocol } from "../../dist/backends/web/local-preview.js";
+
+const registry = new BackendRegistry();
+assert.throws(() => registry.register({ ...webBackend, apiVersion: 99 }), /Unsupported/);
+registry.register(webBackend);
+assert.throws(() => registry.register(webBackend), /already registered/);
+assert.throws(() => registry.resolve({ backend: "uninstalled", uri: "about:blank" }), /Unsupported/);
+assert.throws(() => registry.resolve({ backend: "web", uri: "javascript:alert(1)" }), /scheme/);
+assert.equal(registry.resolve({ backend: "web", uri: "https://example.com" }).id, "web");
+const sessions = new WebBufferRegistry();
+sessions.registerSession({ bufferId: 1, url: "https://example.com", providerId: "test" });
+assert.deepEqual(sessions.getSession(1).surface, { backend: "web", uri: "https://example.com" });
+
+const scratch = realpathSync(mkdtempSync(join(tmpdir(), "jusi-local-backend-")));
+try {
+  const root = join(scratch, "documents");
+  mkdirSync(root);
+  writeFileSync(join(scratch, "secret"), "private");
+  symlinkSync(join(scratch, "secret"), join(root, "escape.txt"));
+  writeFileSync(join(root, "test.html"), "<!doctype html><h1>Raw HTML</h1>");
+  writeFileSync(join(root, "test.htm"), "<p>Raw HTM</p>");
+  writeFileSync(join(root, "test.txt"), "<script>not executable</script>");
+  writeFileSync(join(root, "test.md"), "# Markdown\n\nA paragraph.");
+  let handler, registrations = 0;
+  const protocol = { handle(scheme, next) { assert.equal(scheme, "jusi-directory"); handler = next; registrations++; } };
+  registerDirectoryProtocol(protocol, root);
+  registerDirectoryProtocol(protocol, root);
+  assert.equal(registrations, 1);
+  assert.throws(() => registerDirectoryProtocol(protocol, scratch), /Cannot change/);
+  const fetch = path => { const url = new URL("jusi-directory://open/"); url.searchParams.set("path", path); return handler({ url: url.href }); };
+  assert.equal((await fetch(join(root, "escape.txt"))).status, 403);
+  assert.equal((await fetch(join(scratch, "secret"))).status, 403);
+  assert.equal((await fetch(join(root, "missing"))).status, 403);
+  assert.equal(await (await fetch(join(root, "test.html"))).text(), "<!doctype html><h1>Raw HTML</h1>");
+  assert.equal(await (await fetch(join(root, "test.htm"))).text(), "<p>Raw HTM</p>");
+  assert.match(await (await fetch(join(root, "test.txt"))).text(), /&lt;script&gt;not executable&lt;\/script&gt;/);
+  assert.match(await (await fetch(join(root, "test.md"))).text(), /<h1>Markdown<\/h1>/);
+  assert.match(await (await fetch(root)).text(), /test\.html/);
+  let fail = true;
+  const retryable = { handle() { if (fail) throw new Error("registration failed"); } };
+  assert.throws(() => registerDirectoryProtocol(retryable, root), /registration failed/);
+  fail = false;
+  assert.doesNotThrow(() => registerDirectoryProtocol(retryable, root));
+} finally { rmSync(scratch, { recursive: true, force: true }); }
+console.log("backend boundary tests passed");

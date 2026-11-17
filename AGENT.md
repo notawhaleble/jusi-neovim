@@ -19,7 +19,8 @@ architecture decisions:
 - The bridge resolves Neovim state into explicit app state.
 - The renderer consumes resolved state; it does not invent ownership.
 - Web content is a composed surface, not an uncontrolled overlay.
-- Mirror text is part of the web-buffer contract, not a loose approximation.
+- When enabled, text is a coordinated part of the presentation contract; rich
+  display must not wait for it. Providers may explicitly disable extraction.
 
 If a shortcut would weaken those rules, warn the user and pause before
 implementing it. Explain:
@@ -52,6 +53,7 @@ npm run build
 npm run smoke:live
 ```
 
-Also manually exercise affected editor workflows when the change is visual or
-interactive.
+Use the selective visual/manual review policy in AGENTS.md. Automated coverage
+does not require a duplicate computer-use walkthrough every implementation turn;
+record deferred review and perform targeted or checkpoint review when triggered.
 

@@ -16,17 +16,26 @@ export class NvimLayoutController {
   private readonly webBuffers = new WebBufferRegistry();
   private readonly adapter = new NeovimUiAdapter(this.uiState, this.webBuffers);
   private readonly gridBounds = new Map<number, GridBounds>();
-  private readonly gridBoundRevisions = new Map<number, number>();
   private readonly windowGridIds = new Map<number, number>();
-  private geometryRevision = 0;
 
   applyMetadata(event: NvimMetadataEvent): UiSnapshot {
     if (event.type === "web-session") {
-      this.webBuffers.registerSession({
-        bufferId: event.bufferId,
-        url: normalizeWebSessionUrl(event.url),
-        title: event.title,
-      });
+      try {
+        this.webBuffers.registerSession({
+          bufferId: event.bufferId,
+          incarnation: event.incarnation,
+          nativeChild: event.nativeChild,
+          url: normalizeWebSessionUrl(event.url),
+          title: event.title,
+          providerId: event.providerId,
+          textLayer: event.textLayer,
+          textSource: event.textSource,
+          profile: event.profile,
+          privateBrowsing: event.privateBrowsing,
+        });
+      } catch (error) {
+        console.error("[presentation-backend]", error);
+      }
       return this.uiState.getSnapshot();
     }
 
@@ -35,6 +44,7 @@ export class NvimLayoutController {
       return this.uiState.getSnapshot();
     }
 
+    if (event.type === "window-close") this.windowGridIds.delete(event.windowId);
     const snapshot = this.adapter.apply(event);
     this.reconcileWindowGridIds();
     return snapshot;
@@ -44,7 +54,6 @@ export class NvimLayoutController {
     switch (event.type) {
       case "grid-bounds":
         this.gridBounds.set(event.bounds.gridId, event.bounds);
-        this.gridBoundRevisions.set(event.bounds.gridId, ++this.geometryRevision);
         if (typeof event.windowId === "number") {
           this.windowGridIds.set(event.windowId, event.bounds.gridId);
           this.uiState.setWindowGridId(event.windowId, event.bounds.gridId);
@@ -59,14 +68,21 @@ export class NvimLayoutController {
         break;
       case "grid-close":
         this.gridBounds.delete(event.gridId);
-        this.gridBoundRevisions.delete(event.gridId);
         for (const [windowId, gridId] of this.windowGridIds.entries()) {
           if (gridId === event.gridId) {
             this.windowGridIds.delete(windowId);
+            this.uiState.updateWindowGeometry(windowId, { gridId: undefined, gridBounds: undefined });
           }
         }
         break;
     }
+  }
+
+  getWebSession(bufferId: number): WebBufferSession | undefined { return this.webBuffers.getSession(bufferId); }
+
+  clearMirror(bufferId: number): void {
+    const session = this.webBuffers.getSession(bufferId);
+    if (session) { session.mirror = undefined; session.workerText = undefined; }
   }
 
   getSnapshot(): UiSnapshot {
@@ -108,7 +124,7 @@ export class NvimLayoutController {
     session: WebBufferSession,
     windowsById: Map<number, WindowRef>,
   ): AttachedWebView | null {
-    if (session.attachedWindowId === null) {
+    if (session.nativeChild !== undefined || session.attachedWindowId === null) {
       return null;
     }
 
@@ -119,11 +135,21 @@ export class NvimLayoutController {
 
     return {
       bufferId: session.bufferId,
+      sessionId: session.sessionId,
+      incarnation: session.incarnation,
+      surface: session.surface,
       windowId: window.id,
       tabId: session.lastKnownTabId,
       url: session.url,
       title: session.title,
+      providerId: session.providerId,
+      autoRefresh: session.autoRefresh,
+      textLayer: session.textLayer,
+      textSource: session.textSource,
+      profile: session.profile,
+      privateBrowsing: session.privateBrowsing,
       mirror: session.mirror,
+      workerText: session.workerText,
       cursor: window.cursor,
       selection: window.selection,
       gridBounds: this.resolveContentBounds(window),
@@ -172,58 +198,14 @@ export class NvimLayoutController {
   }
 
   private reconcileWindowGridIds(): void {
-    const snapshot = this.uiState.getSnapshot();
-    if (snapshot.currentTabId === null) {
-      return;
-    }
-
-    const bounds = [...this.gridBounds.values()]
-      .filter((entry) => entry.gridId !== 1)
-      .sort((left, right) => {
-        return (this.gridBoundRevisions.get(right.gridId) ?? 0) - (this.gridBoundRevisions.get(left.gridId) ?? 0);
-      });
-    const usedGridIds = new Set<number>();
-
-    for (const window of snapshot.windows) {
-      if (window.tabId !== snapshot.currentTabId) {
-        continue;
-      }
-      if (
-        typeof window.row !== "number" ||
-        typeof window.col !== "number" ||
-        typeof window.width !== "number" ||
-        typeof window.height !== "number"
-      ) {
-        continue;
-      }
-
-      const windowWidth = window.width;
-      const windowHeight = window.height;
-
-      const match = bounds.find((entry) => {
-        const exactSize = entry.width === windowWidth && entry.height === windowHeight;
-        const normalWindowWithStatusline =
-          entry.zIndex === 0 && entry.width === windowWidth && entry.height === windowHeight + 1;
-        const borderedFloatSize =
-          entry.zIndex > 0 && entry.width === windowWidth + 2 && entry.height === windowHeight + 2;
-        return (
-          !usedGridIds.has(entry.gridId) &&
-          entry.row === window.row &&
-          entry.col === window.col &&
-          (exactSize || normalWindowWithStatusline || borderedFloatSize)
-        );
-      });
-      if (!match) {
-        continue;
-      }
-
-      usedGridIds.add(match.gridId);
-      this.windowGridIds.set(window.id, match.gridId);
-      this.uiState.setWindowGridId(window.id, match.gridId);
+    // Only win_pos/win_float_pos or explicit runtime metadata can establish ownership.
+    for (const window of this.uiState.getSnapshot().windows) {
+      const gridId = this.windowGridIds.get(window.id) ?? window.gridId;
+      const bounds = gridId === undefined ? undefined : this.gridBounds.get(gridId);
+      if (!bounds || gridId === undefined) continue;
+      this.uiState.setWindowGridId(window.id, gridId);
       this.uiState.updateWindowGeometry(window.id, {
-        zIndex: match.zIndex,
-        compIndex: match.compIndex,
-        gridBounds: match,
+        zIndex: bounds.zIndex, compIndex: bounds.compIndex, gridBounds: bounds,
       });
     }
   }

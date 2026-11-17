@@ -1,0 +1,51 @@
+vim.opt.runtimepath:prepend(vim.fn.getcwd() .. '/runtime')
+local browser = require('jusi_neovim.browser')
+local function buffer(provider)
+  local b = vim.api.nvim_create_buf(true, true)
+  vim.b[b].jusi_provider_id = provider or 'web'
+  vim.b[b].jusi_buffer_kind = 'web'
+  vim.b[b].jusi_incarnation = 1
+  return b, {bufferId=b, incarnation=1}
+end
+local a, ai = buffer()
+local b, bi = buffer()
+local url = 'https://example.com/a b?x=100%25|quit#fragment'
+assert(browser.location(ai, url))
+assert(vim.api.nvim_buf_get_name(a) == url)
+assert(browser.location(bi, url))
+assert(vim.api.nvim_buf_get_name(b) == url .. ' [2]')
+assert(vim.b[b].jusi_browser_url == url)
+assert(vim.bo[b].buftype == 'nofile')
+assert(browser.location(bi, url))
+assert(vim.api.nvim_buf_get_name(b) == url .. ' [2]')
+local count = #vim.api.nvim_list_bufs()
+assert(browser.location(ai, url .. '#new'))
+assert(vim.api.nvim_buf_get_name(a) == url .. '#new')
+assert(browser.location(ai, url))
+assert(vim.api.nvim_buf_get_name(a) == url)
+assert(#vim.api.nvim_list_bufs() == count, 'rename leaked old-name buffers')
+assert(not browser.location({bufferId=a,incarnation=2}, 'https://stale/'))
+assert(vim.b[a].jusi_browser_url == url)
+local other, oi = buffer('fixture')
+assert(not browser.location(oi, url))
+assert(vim.api.nvim_buf_get_name(other) == '')
+assert(not browser.location(ai, 'https://bad/\nquit'))
+assert(browser.location(ai, 'about:blank'))
+assert(vim.api.nvim_buf_get_name(a) == 'jusi-web://about:blank')
+assert(vim.b[a].jusi_browser_url == 'about:blank')
+local reserved = vim.api.nvim_create_buf(true, true)
+vim.api.nvim_buf_set_name(reserved, 'https://collision/')
+assert(browser.location(ai, 'https://collision/'))
+assert(vim.api.nvim_buf_get_name(a) == 'https://collision/ [2]')
+local rename = vim.api.nvim_buf_set_name
+vim.api.nvim_buf_set_name = function() error('fixture rename failure') end
+assert(not browser.location(ai, 'https://retry/'))
+assert(vim.b[a].jusi_browser_url == 'https://retry/')
+assert(vim.b[a].jusi_browser_name_error:find('fixture rename failure', 1, true))
+vim.api.nvim_buf_set_name = rename
+assert(browser.location(ai, 'https://retry/'))
+assert(vim.b[a].jusi_browser_name_error == nil)
+vim.api.nvim_buf_delete(a, {force=true})
+assert(not browser.location(ai, url))
+print('browser URL naming tests passed')
+vim.cmd('qa!')

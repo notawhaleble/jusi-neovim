@@ -1,3 +1,4 @@
+import type { PresentationSession, AttachedPresentation, TextDocument, TextLine } from "../presentation/contracts.js";
 export type BufferKind = "text" | "web";
 
 export interface BufferRef {
@@ -38,19 +39,11 @@ export interface MirrorSpan {
   blockHint?: "block" | "inline";
 }
 
-export interface MirrorLine {
-  lineNumber: number;
-  text: string;
-  startIndex: number;
-  endIndex: number;
+export interface MirrorLine extends TextLine {
   spans: MirrorSpan[];
 }
 
-export interface MirrorDocument {
-  version: number;
-  lines: MirrorLine[];
-  totalTextLength: number;
-}
+export interface MirrorDocument extends TextDocument<MirrorLine> {}
 
 export interface Rect {
   x: number;
@@ -59,16 +52,13 @@ export interface Rect {
   height: number;
 }
 
-export interface WebBufferSession {
-  bufferId: number;
+/** Compatibility name for the web wire protocol. */
+export interface WebBufferSession extends PresentationSession<MirrorDocument> {
   url: string;
-  title?: string;
-  mirror?: MirrorDocument;
-  attachedWindowId: number | null;
-  lastKnownTabId: number | null;
 }
 
 export interface GridBounds {
+  mouseEnabled?: boolean;
   gridId: number;
   row: number;
   col: number;
@@ -85,13 +75,9 @@ export interface UiSnapshot {
   buffers: BufferRef[];
 }
 
-export interface AttachedWebView {
-  bufferId: number;
-  windowId: number;
-  tabId: number | null;
+/** Web-specific mappings and Neovim geometry extend the shared attachment contract. */
+export interface AttachedWebView extends AttachedPresentation<MirrorDocument> {
   url: string;
-  title?: string;
-  mirror?: MirrorDocument;
   cursor?: BufferCursorPosition;
   selection?: BufferSelectionRange;
   gridBounds?: GridBounds;
@@ -99,13 +85,22 @@ export interface AttachedWebView {
 
 export interface BufferCursorPosition {
   row: number;
+  /** Zero-based Unicode code-point column, including composing marks; not bytes or cells. */
   col: number;
+}
+
+export interface SelectionSpan {
+  row: number;
+  startCol: number;
+  endCol: number;
 }
 
 export interface BufferSelectionRange {
   start: BufferCursorPosition;
   end: BufferCursorPosition;
   linewise?: boolean;
+  /** Authoritative half-open code-point spans. Empty means no projectable text. */
+  spans?: SelectionSpan[];
 }
 
 export interface CursorPosition {
@@ -135,6 +130,11 @@ export interface ModeState {
 }
 
 export interface PrimaryScreenState {
+  /** UI-related options reported by Neovim, captured at redraw boundaries. */
+  options?: Record<string, boolean | number | string>;
+  /** Reported capability settings incompatible with this presentation host. */
+  unsupportedUiOptions?: string[];
+  busy?: boolean;
   rows: number;
   cols: number;
   lines: string[];
@@ -163,6 +163,8 @@ export interface ScreenCell {
 }
 
 export interface ScreenLineRun {
+  /** Authoritative Neovim cell allocation, independent of UTF-16 length. */
+  columns?: number;
   text: string;
   highlightId: number;
 }
@@ -175,10 +177,24 @@ export interface HighlightAttrs {
   italic?: boolean;
   underline?: boolean;
   undercurl?: boolean;
+  underdouble?: boolean;
+  underdotted?: boolean;
+  underdashed?: boolean;
+  strikethrough?: boolean;
   reverse?: boolean;
 }
 
+export interface HighlightChunk {
+  attrs?: HighlightAttrs;
+  highlightId: number;
+  text: string;
+}
+
 export interface CmdlineState {
+  chunks?: HighlightChunk[];
+  promptHighlightId?: number;
+  promptHighlight?: HighlightAttrs;
+  blockChunks?: HighlightChunk[][];
   visible: boolean;
   content: string;
   firstChar: string;
@@ -208,12 +224,17 @@ export interface PopupmenuState {
 }
 
 export interface MessageEntry {
+  chunks?: HighlightChunk[];
+  truncated?: boolean;
+  /** Monotonic display revision, distinct from optional Neovim message IDs. */
+  revision?: number;
   kind: string;
   text: string;
   id: string | number | null;
 }
 
 export interface MessageState {
+  statusChunks?: Partial<Record<"showmode" | "showcmd" | "ruler", HighlightChunk[]>>;
   version: number;
   entries: MessageEntry[];
   showmode: string;

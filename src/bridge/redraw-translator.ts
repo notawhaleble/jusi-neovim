@@ -2,6 +2,7 @@ import { GridBounds } from "../core/types.js";
 import { NvimGeometryEvent, NvimRedrawEvent } from "./protocol.js";
 
 type PartialGridBounds = {
+  mouseEnabled?: boolean;
   gridId: number;
   row: number;
   col: number;
@@ -41,11 +42,16 @@ export class NvimRedrawTranslator {
             event.args[10],
             event.args[7],
             event.args[8],
+            event.args[6],
             geometry,
           );
           break;
-        case "win_close":
         case "win_hide":
+          // Hidden grids retain their allocation. Neovim may show a float again
+          // without grid_resize; remove visibility, not its known dimensions.
+          geometry.push({ type: "grid-close", gridId: event.args[0] });
+          break;
+        case "win_close":
         case "grid_destroy":
           this.grids.delete(event.args[0]);
           geometry.push({
@@ -94,6 +100,7 @@ export class NvimRedrawTranslator {
       height,
       zIndex: 0,
       compIndex: 0,
+      mouseEnabled: true,
     };
     this.grids.set(gridId, next);
     geometry.push({
@@ -110,6 +117,7 @@ export class NvimRedrawTranslator {
     col: number,
     zIndex: number,
     compIndex: number,
+    mouseEnabled: boolean,
     geometry: NvimGeometryEvent[],
   ): void {
     const next = {
@@ -118,6 +126,7 @@ export class NvimRedrawTranslator {
       col,
       zIndex,
       compIndex,
+      mouseEnabled,
     };
     this.grids.set(gridId, next);
     geometry.push({
@@ -136,12 +145,14 @@ export class NvimRedrawTranslator {
       height: 0,
       zIndex: 0,
       compIndex: 0,
+      mouseEnabled: true,
     };
   }
 
   private toBounds(bounds: PartialGridBounds): GridBounds {
     return {
       gridId: bounds.gridId,
+      mouseEnabled: bounds.mouseEnabled,
       row: bounds.row,
       col: bounds.col,
       width: bounds.width,

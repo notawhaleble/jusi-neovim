@@ -1,0 +1,133 @@
+# Working agreement
+
+Read `AGENT.md` for engineering invariants, then `docs/implementation/STATUS.md`
+and `docs/implementation/requirements.json` before changing code.
+
+This is a Neovim presentation host. Web browsing is one provider. Keep Neovim
+state authoritative and use explicit window/grid identities. Providers are
+trusted installed code; their documents and extraction results are untrusted.
+
+## Session protocol
+
+1. Inspect `git status --short` and preserve unrelated edits. Do not reset the tree.
+2. Run `npm run harness` to see incomplete requirements and the next milestone.
+3. Read the relevant ADR and acceptance cases in `docs/implementation/PLAN.md`.
+4. Implement one coherent milestone, including its integration and error paths.
+5. For implementation milestones, run `npm run check`. For guest, focus, text lifecycle, or permission changes,
+   also run `npm run smoke:electron` on a desktop (Linux: `xvfb-run -a`). Apply
+   the selective visual/manual review policy below; computer use is not required
+   on every turn or every passing implementation milestone.
+6. Update STATUS with exact checks, failures, known limits, and the next step.
+   Update requirements evidence only after verification. Passing infrastructure
+   checks does not mean browser safety parity or all requirements are complete.
+7. Keep future work in implementation docs, current behavior in architecture
+   docs, and durable decisions in `docs/decisions/`.
+
+Do not silently enable shell expansion for provider commands, expose Neovim IPC
+to documents, disable TLS verification, reuse Chrome's live profile directory,
+or claim browser security equivalence without the release-gate evidence.
+
+No publishing or remote repository creation is needed for local implementation.
+Package directories must remain extractable into independent repositories.
+
+## Testing and cost
+
+The user renewed delegation on 2026-10-11. Use one `gpt-6-luna` / `low`
+verification agent for substantial testing, with `fork_turns: "none"` and a compact
+brief. This supersedes the primary-only policy, backed up at
+`docs/implementation/backups/AGENTS.primary-testing.2026-10-11.md.bak`.
+
+- Primary owns architecture, implementation and final acceptance decisions. Luna
+  owns assigned check execution, routine failure triage, log filtering, artifact
+  inspection and interactive verification when its tools support it. Primary
+  reviews the concise evidence report instead of repeating successful checks or UI.
+- Assign exact commands, changed behavior, acceptance criteria, environment and log
+  paths. Do not pass conversation history or the full roadmap. Execution-only agents
+  read this agreement and AGENT.md, plus their brief; no recursive delegation.
+- Use one agent per milestone and reuse it for targeted follow-ups. Single quick
+  focused commands and documentation-only checks may stay with the primary when
+  spawning would add more overhead than it removes.
+- Freeze verified code; run checks sequentially. Do not launch competing builds or
+  desktop workflows. The primary does not poll the same logs. Child returns at most
+  250 words: requested model, commands/exit codes, findings, artifact paths, skipped
+  checks and a clear PASS/FAIL/BLOCKED. Store detail under `.local/review/`.
+- On unexpected failure, stop the suite, inspect only relevant excerpts and report
+  the cause or unresolved question. No source/test/fixture edits or blind reruns.
+  Primary handles difficult diagnosis and fixes, then assigns a justified targeted
+  rerun. Do not resume the full suite automatically.
+- Include visual evidence review in the same assignment when required. Avoid raw
+  accessibility trees, tool documentation or successful test output in the primary
+  context. Primary repeats interactive review only for an unresolved concern.
+- Never silently substitute another model. If Luna is unavailable, report that and
+  fall back to primary execution. Do not claim monetary/token savings without usage
+  evidence; fresh context still includes runtime/system overhead.
+- Record delegated vs primary work, test attempts and failures in STATUS. Record
+  model/token/cached-token usage if exposed; otherwise mark it unavailable. Evaluate
+  the experiment over the next three implementation milestones, not one quiet run.
+
+On this machine, select Node 24 with
+`PATH=/opt/homebrew/opt/node@24/bin:$PATH`.
+Run checks sequentially and keep the code being verified unchanged until they
+finish. Do not launch competing builds or desktop workflows. Save verbose logs to
+`.local/review/` and inspect relevant excerpts first. Report commands, exit codes,
+failures, artifact paths and checks not run concisely.
+
+Diagnose unexpected failures before changing code or rerunning checks. Avoid blind
+reruns; use a targeted rerun only for an identified cause or transient condition.
+
+Use focused checks while implementing, then the required suite once at the coherent
+milestone boundary. A new change, failure or unresolved concern may justify another
+run. Package smoke is required when packaging, shipped runtime/resources, preload,
+Electron security configuration or package-specific behavior changes; otherwise run
+it at a browser integration/release checkpoint rather than every small slice.
+Keep automated desktop verification for affected behavior; schedule manual review
+using the policy below.
+Do not copy and modify an entire manual smoke harness for routine verification;
+prefer a reusable review mode and escalate missing harness support.
+
+### Selective visual and computer-use review
+
+Automated Electron assertions and scripted input are distinct from model-driven
+computer use (CUA). Keep required automated checks. Do not routinely replay their
+passing workflows through CUA.
+
+- Default: no CUA for refactors or fixes whose behavior is covered by meaningful
+  automated assertions. Record manual review deferred, not passed.
+- Inspect an existing screenshot only when appearance/layout changed or a visual
+  concern exists. Use the saved artifact without opening a live app when sufficient.
+- Use targeted CUA immediately for a new user interaction not covered by automation,
+  a visual/focus/input issue automated evidence cannot resolve, or a native/OS flow
+  such as real IME, device permissions or system dialogs. A changed file or broad
+  category such as "focus" alone is not a trigger.
+- Accumulate covered UI changes in a short STATUS queue. Run one combined manual
+  review after three completed UI-affecting milestones with deferred review, or at
+  the next browser integration/release checkpoint, whichever comes first. Docs-only
+  and non-UI milestones do not advance the counter. User-requested manual review
+  also triggers it. Review both adapters only for affected shared workflows.
+- Give Luna a compact list of changed workflows and expected results. Reuse the
+  existing review harness, batch deterministic interactions, prefer concise AX
+  observations, and take screenshots only to answer a visual question. Avoid full
+  tree dumps and repeated exploration after evidence is sufficient.
+- Stop and report a concrete failure instead of repeatedly clicking or restarting.
+  Primary does not repeat successful delegated manual review. Explicit release-gate
+  manual requirements still apply; deferral cannot establish browser safety parity.
+
+For instructions/documentation-only changes, use `npm run harness`, diff review and
+`git diff --check`; do not run build, desktop or packaged suites unless the changed
+content affects their execution. Record this scope accurately in the handoff.
+
+## Project scope
+
+Name shared behavior work by capability (browser interaction, text lifecycle,
+mapping, focus conformance), not by popup presentation. Browser documents must use
+the same behavior regardless of where they are displayed. Keep DOM/native transport
+differences in adapters. Reserve popup/new-window work for opening policy, actual
+Chromium child adoption, opener/exact Session preservation and parent/child lifetime.
+For any proposed special case, state which platform or child-window constraint
+requires it; otherwise factor it into the shared browser implementation. Shared
+behavior acceptance must exercise both adapters, including missing action dispatch.
+
+Non-browser provider implementations belong in their own repositories and separate
+sessions. The existing Markdown test package is retained as API conformance evidence;
+do not expand it here. Current implementation work focuses on host/core and browser
+functionality. A jusi-neovim plugin-authoring skill is deferred until explicitly requested.

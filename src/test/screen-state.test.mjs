@@ -6,12 +6,12 @@ function testGridScrollMovesCellsUp() {
   const screen = new NvimScreenState();
   screen.handleRedraw([
     ["grid_resize", [2, 8, 4]],
-    ["grid_line", [2, 0, 0, [["one     "]]]],
-    ["grid_line", [2, 1, 0, [["two     "]]]],
-    ["grid_line", [2, 2, 0, [["three   "]]]],
-    ["grid_line", [2, 3, 0, [["four    "]]]],
+    ["grid_line", [2, 0, 0, [["o"], ["n"], ["e"], [" "], [" "], [" "], [" "], [" "]]]],
+    ["grid_line", [2, 1, 0, [["t"], ["w"], ["o"], [" "], [" "], [" "], [" "], [" "]]]],
+    ["grid_line", [2, 2, 0, [["t"], ["h"], ["r"], ["e"], ["e"], [" "], [" "], [" "]]]],
+    ["grid_line", [2, 3, 0, [["f"], ["o"], ["u"], ["r"], [" "], [" "], [" "], [" "]]]],
     ["grid_scroll", [2, 0, 4, 0, 8, 1, 0]],
-    ["grid_line", [2, 3, 0, [["tail    "]]]],
+    ["grid_line", [2, 3, 0, [["t"], ["a"], ["i"], ["l"], [" "], [" "], [" "], [" "]]]],
   ]);
 
   const grid = screen.getGridStates(true).find((entry) => entry.gridId === 2);
@@ -27,12 +27,12 @@ function testGridScrollMovesCellsDown() {
   const screen = new NvimScreenState();
   screen.handleRedraw([
     ["grid_resize", [2, 8, 4]],
-    ["grid_line", [2, 0, 0, [["one     "]]]],
-    ["grid_line", [2, 1, 0, [["two     "]]]],
-    ["grid_line", [2, 2, 0, [["three   "]]]],
-    ["grid_line", [2, 3, 0, [["four    "]]]],
+    ["grid_line", [2, 0, 0, [["o"], ["n"], ["e"], [" "], [" "], [" "], [" "], [" "]]]],
+    ["grid_line", [2, 1, 0, [["t"], ["w"], ["o"], [" "], [" "], [" "], [" "], [" "]]]],
+    ["grid_line", [2, 2, 0, [["t"], ["h"], ["r"], ["e"], ["e"], [" "], [" "], [" "]]]],
+    ["grid_line", [2, 3, 0, [["f"], ["o"], ["u"], ["r"], [" "], [" "], [" "], [" "]]]],
     ["grid_scroll", [2, 0, 4, 0, 8, -1, 0]],
-    ["grid_line", [2, 0, 0, [["head    "]]]],
+    ["grid_line", [2, 0, 0, [["h"], ["e"], ["a"], ["d"], [" "], [" "], [" "], [" "]]]],
   ]);
 
   const grid = screen.getGridStates(true).find((entry) => entry.gridId === 2);
@@ -48,7 +48,7 @@ function testGridLineWritesTextAfterLeadingSpace() {
   const screen = new NvimScreenState();
   screen.handleRedraw([
     ["grid_resize", [2, 8, 2]],
-    ["grid_line", [2, 0, 0, [[" abc"]]]],
+    ["grid_line", [2, 0, 0, [[" "], ["a"], ["b"], ["c"]]]],
   ]);
 
   const grid = screen.getGridStates(true).find((entry) => entry.gridId === 2);
@@ -60,7 +60,7 @@ function testGridLineStoresHighlightIds() {
   screen.handleRedraw([
     ["hl_attr_define", [1, { foreground: 0xff0000, background: 0x001122, bold: true }]],
     ["grid_resize", [2, 8, 2]],
-    ["grid_line", [2, 0, 0, [["ab", 1], ["c"], [" ", 0, 2]]]],
+    ["grid_line", [2, 0, 0, [["a", 1], ["b", 1], ["c"], [" ", 0, 2]]]],
   ]);
 
   const state = screen.getState(true);
@@ -73,6 +73,10 @@ function testGridLineStoresHighlightIds() {
     italic: undefined,
     underline: undefined,
     undercurl: undefined,
+    underdouble: undefined,
+    underdotted: undefined,
+    underdashed: undefined,
+    strikethrough: undefined,
     reverse: undefined,
   });
   assert.equal(grid?.lines[0], "abc     ");
@@ -84,8 +88,8 @@ function testGridLineStoresHighlightIds() {
     { text: " ", highlightId: 0 },
   ]);
   assert.deepEqual(grid?.runs[0], [
-    { text: "abc", highlightId: 1 },
-    { text: "     ", highlightId: 0 },
+    { text: "abc", highlightId: 1, columns: 3 },
+    { text: "     ", highlightId: 0, columns: 5 },
   ]);
 }
 
@@ -148,8 +152,8 @@ function testGridScrollPreservesHighlightIds() {
   screen.handleRedraw([
     ["hl_attr_define", [1, { foreground: 0x00ff00 }]],
     ["grid_resize", [2, 4, 2]],
-    ["grid_line", [2, 0, 0, [["top ", 1]]]],
-    ["grid_line", [2, 1, 0, [["bot ", 0]]]],
+    ["grid_line", [2, 0, 0, [["t", 1], ["o", 1], ["p", 1], [" ", 1]]]],
+    ["grid_line", [2, 1, 0, [["b", 0], ["o", 0], ["t", 0], [" ", 0]]]],
     ["grid_scroll", [2, 0, 2, 0, 4, 1, 0]],
   ]);
 
@@ -167,7 +171,7 @@ function testGridCloseRemovesStaleGridState() {
   const screen = new NvimScreenState();
   screen.handleRedraw([
     ["grid_resize", [2, 4, 1]],
-    ["grid_line", [2, 0, 0, [["gone"]]]],
+    ["grid_line", [2, 0, 0, [["g"], ["o"], ["n"], ["e"]]]],
     ["grid_cursor_goto", [2, 0, 1]],
     ["grid_destroy", [2]],
   ]);
@@ -180,7 +184,7 @@ function testWinHideKeepsGridContentForTabReturn() {
   const screen = new NvimScreenState();
   screen.handleRedraw([
     ["grid_resize", [2, 4, 1]],
-    ["grid_line", [2, 0, 0, [["keep"]]]],
+    ["grid_line", [2, 0, 0, [["k"], ["e"], ["e"], ["p"]]]],
     ["win_hide", [2]],
   ]);
 
@@ -199,3 +203,38 @@ testGridCloseRemovesStaleGridState();
 testWinHideKeepsGridContentForTabReturn();
 
 console.log("screen-state tests passed");
+
+// Each grid_line item is a cell, not a string to split into code points.
+{
+ const screen=new NvimScreenState();
+ screen.handleRedraw([['grid_resize',[2,8,2]],
+   ['grid_line',[2,0,0,[['A',1],['é'],['文'],[''],['😀'],[''],['Z'],[' ']]]]]);
+ const grid=screen.getGridStates(true)[0];
+ assert.deepEqual(grid.cells[0].map(c=>c.text),['A','é','文','','😀','','Z',' ']);
+ assert.deepEqual(grid.runs[0].map(r=>[r.text,r.columns]),[['A',1],['é',1],['文',2],['😀',2],['Z ',2]]);
+ assert.equal(grid.lines[0],'Aé文😀Z ');
+ screen.handleRedraw([['grid_line',[2,0,1,[['ô',2,2],[' ',0,3]]]],['grid_scroll',[2,0,2,0,8,-1,0]]]);
+ const moved=screen.getGridStates(true)[0];
+ assert.deepEqual(moved.cells[1].slice(1,3).map(c=>c.text),['ô','ô']);
+ assert.equal(grid.cells[0][1].text,'é','prior snapshots stay immutable');
+ assert.equal(moved.runs[1].reduce((n,r)=>n+r.columns,0),8);
+}
+
+{
+  const screen = new NvimScreenState();
+  screen.handleRedraw([['mode_info_set', [true, [{cursor_shape:'vertical',cell_percentage:20}]]], ['busy_start', []]]);
+  const previous = screen.getState();
+  assert.equal(previous.busy,true);
+  assert.equal(previous.mode.cursor.shape,'vertical');
+  screen.handleRedraw([['mode_info_set', [false, [{cursor_shape:'horizontal'}]]], ['busy_stop', []]]);
+  assert.equal(screen.getState().mode.cursor.shape,'block');
+  assert.equal(screen.getState().busy,false);
+  assert.equal(previous.busy,true);
+  assert.equal(previous.mode.cursor.shape,'vertical');
+  screen.handleRedraw([['mode_info_set', [true, [{cursor_shape:'horizontal'}]]]]);
+  assert.equal(screen.getState().mode.cursor.shape,'horizontal');
+  screen.handleRedraw([['hl_attr_define', [42,{underdouble:true,underdotted:true,underdashed:true,strikethrough:true,special:0x123456}]]]);
+  const attrs = screen.getState().highlights[42];
+  for (const name of ['underdouble','underdotted','underdashed','strikethrough']) assert.equal(attrs[name],true);
+  assert.equal(attrs.special,'#123456');
+}

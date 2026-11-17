@@ -4,8 +4,10 @@ end
 vim.g.loaded_jusi_neovim = 1
 
 local M = {}
+local incarnation = 0
 local snapshot_scheduled = false
 local visible_snapshot_scheduled = false
+local known_tabs = {}
 
 local function notify(method, payload)
   pcall(vim.rpcnotify, 0, method, payload)
@@ -160,6 +162,7 @@ local function window_selection(winid, bufnr)
     start = start,
     ["end"] = finish,
     linewise = linewise,
+    spans = require("jusi_neovim.selection").spans(bufnr, anchor, cursor, mode, vim.o.selection == "exclusive"),
   }
 end
 
@@ -204,6 +207,7 @@ local function notify_tab(tabnr)
     return
   end
 
+  known_tabs[tabnr] = true
   local current_window = vim.api.nvim_tabpage_get_win(tabnr)
   notify("jusi:layout", {
     type = "tab",
@@ -224,7 +228,21 @@ local function notify_current_tab()
   })
 end
 
+-- TabClosed supplies a tab number, never a stable Tabpage handle. Reconcile the
+-- handles we actually published against Neovim after the close has completed.
+local function reconcile_tabs()
+  local live = {}
+  for _, tab in ipairs(vim.api.nvim_list_tabpages()) do live[tab] = true end
+  for tab in pairs(known_tabs) do
+    if not live[tab] then
+      notify("jusi:layout", { type = "tab-close", tabId = tab })
+      known_tabs[tab] = nil
+    end
+  end
+end
+
 local function notify_visible_windows()
+  reconcile_tabs()
   local tabnr = vim.api.nvim_get_current_tabpage()
   notify_current_tab()
   notify_tab(tabnr)
@@ -237,6 +255,7 @@ local function notify_visible_windows()
 end
 
 function M.notify_full_snapshot()
+  reconcile_tabs()
   notify_current_tab()
 
   for _, tabnr in ipairs(vim.api.nvim_list_tabpages()) do
@@ -284,8 +303,20 @@ function M.set_buffer_kind(kind, bufnr)
   notify_buffer(bufnr)
 end
 
-function M.open_web_buffer(url)
-  local bufnr = vim.api.nvim_get_current_buf()
+function M.open_surface(bufnr, url, options)
+  options = options or {}
+  incarnation = incarnation + 1
+  vim.b[bufnr].jusi_incarnation = incarnation
+  vim.b[bufnr].jusi_provider_id = options.providerId or "web"
+  vim.b[bufnr].jusi_auto_refresh = true
+  vim.b[bufnr].jusi_browser_status = "idle"
+  vim.b[bufnr].jusi_text_source = options.textSource or "dom"
+  vim.b[bufnr].jusi_worker_status = "idle"
+  vim.b[bufnr].jusi_native_child = options.nativeChild
+  vim.b[bufnr].jusi_document = nil
+  vim.b[bufnr].jusi_text_layer = options.textLayer or "auto"
+  vim.b[bufnr].jusi_browser_profile = options.profile or "default"
+  vim.b[bufnr].jusi_browser_private = options.privateBrowsing == true
   M.set_buffer_kind("web", bufnr)
   vim.api.nvim_set_option_value("buftype", "nofile", { buf = bufnr })
   vim.api.nvim_set_option_value("bufhidden", "hide", { buf = bufnr })
@@ -293,10 +324,19 @@ function M.open_web_buffer(url)
   vim.api.nvim_set_option_value("readonly", true, { buf = bufnr })
   vim.api.nvim_set_option_value("modifiable", false, { buf = bufnr })
   M.apply_web_buffer_maps(bufnr)
+  require("jusi_neovim.browser").location({bufferId=bufnr, incarnation=incarnation}, url or "about:blank")
+  require("jusi_neovim.browser").attach()
   notify("jusi:web-session", {
     bufferId = bufnr,
     url = url or "",
     title = nil,
+    incarnation = incarnation,
+    nativeChild = options.nativeChild,
+    providerId = options.providerId or "web",
+    textLayer = options.textLayer or "auto",
+    textSource = options.textSource or "dom",
+    profile = options.profile or "default",
+    privateBrowsing = options.privateBrowsing == true,
   })
 end
 
@@ -320,6 +360,7 @@ function M.open_link_under_cursor()
 end
 
 function M.enter_web_mode()
+  require("jusi_neovim").set_mode(vim.api.nvim_get_current_buf(), vim.b.jusi_incarnation, vim.api.nvim_get_current_win(), "rich")
   local winid = vim.api.nvim_get_current_win()
   local bufnr = vim.api.nvim_win_get_buf(winid)
   notify("jusi:web-enter-mode", {
@@ -346,6 +387,11 @@ function M.apply_web_buffer_maps(bufnr)
     })
   end
 
+  for lhs, direction in pairs({ ["<Tab>"] = 1, ["<S-Tab>"] = -1 }) do
+    vim.keymap.set("n", lhs, function()
+      notify("jusi:web-region", { bufferId = bufnr, windowId = vim.api.nvim_get_current_win(), direction = direction })
+    end, { buffer = bufnr, silent = true })
+  end
   map_scroll("<C-e>", 1, "<C-e>")
   map_scroll("<C-y>", -1, "<C-y>")
   vim.keymap.set("n", "<C-j>", function()
@@ -362,20 +408,51 @@ function M.apply_web_buffer_maps(bufnr)
     remap = false,
     silent = true,
   })
+  if vim.b[bufnr].jusi_provider_id == "web" then
+    vim.keymap.set("n", "<C-p>", function() require("jusi_neovim.browser").command("toggle-pause") end, {buffer=bufnr,silent=true,desc="Pause/resume browser text"})
+  end
+  vim.keymap.set("n", "<C-n>", function() require("jusi_neovim.browser").command("new-tab") end, {buffer=bufnr,silent=true})
+  vim.keymap.set("n", "<C-l>", function() require("jusi_neovim.browser").command("copy-url") end, {buffer=bufnr,silent=true})
+  vim.keymap.set("n", "<C-q>", "<Cmd>JusiClose<CR>", { buffer = bufnr, silent = true })
   vim.b[bufnr].jusi_web_buffer_maps = 1
 end
 
-vim.api.nvim_create_user_command("JusiWebBuffer", function(opts)
-  M.open_web_buffer(opts.args ~= "" and opts.args or "")
-end, {
-  nargs = "?",
-})
+_G.jusi_neovim_open_surface = M.open_surface
+
+vim.api.nvim_create_user_command("JusiOpen", function(opts)
+  local id = table.remove(opts.fargs, 1)
+  require("jusi_neovim").open(id, table.concat(opts.fargs, " "), { text_layer = opts.bang and "off" or "auto" })
+end, { nargs = "+", bang = true })
+
+vim.api.nvim_create_user_command("JusiClose", function()
+  local bufnr = vim.api.nvim_get_current_buf()
+  require("jusi_neovim").close(bufnr)
+  if vim.b[bufnr].jusi_native_child then
+    for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do pcall(vim.api.nvim_win_close, win, true) end
+  end
+  if vim.api.nvim_buf_is_valid(bufnr) then vim.api.nvim_buf_delete(bufnr, { force = false }) end
+end, {})
 
 vim.api.nvim_create_user_command("JusiTextBuffer", function()
+  require("jusi_neovim").close()
   M.set_buffer_kind("text")
 end, {})
 
 local group = vim.api.nvim_create_augroup("jusi_neovim_runtime", { clear = true })
+
+vim.api.nvim_create_autocmd({ "CursorMoved", "BufEnter", "WinEnter", "ModeChanged", "WinScrolled", "WinResized" }, {
+  group = group,
+  callback = function() require("jusi_neovim").navigate() end,
+})
+vim.api.nvim_create_autocmd({ "BufLeave", "WinLeave" }, {
+  group = group,
+  callback = function(args) require("jusi_neovim").leave_window(args.buf) end,
+})
+
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  group = group,
+  callback = function() require("jusi_neovim").close_all() end,
+})
 
 vim.api.nvim_create_autocmd({ "VimEnter" }, {
   group = group,
@@ -407,6 +484,7 @@ vim.api.nvim_create_autocmd({ "BufEnter", "BufFilePost", "BufAdd" }, {
 vim.api.nvim_create_autocmd({ "BufDelete" }, {
   group = group,
   callback = function(args)
+    require("jusi_neovim").close(args.buf)
     notify("jusi:layout", {
       type = "buffer-close",
       bufferId = args.buf,
@@ -429,6 +507,15 @@ vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
     if buffer_kind(bufnr) == "web" then
       notify_window(winid)
     end
+  end,
+})
+
+vim.api.nvim_create_autocmd("OptionSet", {
+  group = group,
+  pattern = { "selection", "virtualedit", "tabstop" },
+  callback = function()
+    schedule_visible_snapshot()
+    require("jusi_neovim").navigate()
   end,
 })
 
@@ -467,16 +554,8 @@ vim.api.nvim_create_autocmd({ "WinClosed" }, {
 
 vim.api.nvim_create_autocmd({ "TabClosed" }, {
   group = group,
-  callback = function(args)
-    local tabnr = tonumber(args.match)
-    if not tabnr then
-      return
-    end
-    notify("jusi:layout", {
-      type = "tab-close",
-      tabId = tabnr,
-    })
-    schedule_visible_snapshot()
+  callback = function()
+    schedule_full_snapshot()
   end,
 })
 

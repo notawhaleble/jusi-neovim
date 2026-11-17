@@ -1,0 +1,74 @@
+name: Presentation host checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: brew install neovim
+      - run: npm ci
+      - run: npm ci --prefix packages/jusi-markdown.nvim --ignore-scripts
+      - run: npm run check
+      - run: npm run test:packages
+      - run: npm run smoke:profiles
+      - run: npm run smoke:electron
+      - run: npm run smoke:package
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: presentation-smoke
+          path: |
+            .local/review/presentation.png
+            .local/review/packaged-presentation.png
+            .local/review/*markdown.png
+            .local/review/*popup.png
+            .local/review/*adoption.png
+            .local/review/*-sandbox.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install desktop test dependencies and pinned Neovim
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0 libgbm1 libnss3 libasound2
+          curl -fL --retry 3 https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux-x86_64.tar.gz -o /tmp/nvim.tar.gz
+          tar -xzf /tmp/nvim.tar.gz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - run: npm ci --prefix packages/jusi-markdown.nvim --ignore-scripts
+      - run: npm run check
+      - run: npm run test:packages
+      - run: xvfb-run -a npm run smoke:profiles
+      - run: xvfb-run -a npm run smoke:electron
+      - run: xvfb-run -a npm run smoke:package
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-presentation-smoke
+          path: |
+            .local/review/presentation.png
+            .local/review/packaged-presentation.png
+            .local/review/*markdown.png
+            .local/review/*popup.png
+            .local/review/*adoption.png
+            .local/review/*-sandbox.json
+          include-hidden-files: true
+          if-no-files-found: ignore

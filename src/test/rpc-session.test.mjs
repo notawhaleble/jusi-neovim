@@ -20,7 +20,7 @@ class FakeClient {
     if (method === "nvim_get_api_info") {
       return [7, {}];
     }
-    return null;
+    return method === "nvim_exec_lua" ? true : null;
   }
 
   dispose() {}
@@ -68,17 +68,24 @@ async function testUpdateWebMirrorWritesBufferAndEmitsState() {
     emitted = state;
   });
 
-  await session.updateWebMirror(3, {
+  session.start();
+  client.listener({ method: "jusi:layout", args: [{ type: "buffer", bufferId: 3, kind: "web" }] });
+  client.listener({ method: "jusi:web-session", args: [{ bufferId: 3, url: "https://example.com", incarnation: 1 }] });
+  const ticket = { bufferId: 3, sessionId: session.getWebSession(3).sessionId, incarnation: 1, revision: 1 };
+  assert.equal(await session.invalidateWebDocument(ticket), true);
+  const mirror = {
     version: 1,
     totalTextLength: 11,
     lines: [
       { lineNumber: 0, text: "hello", startIndex: 0, endIndex: 5, spans: [] },
       { lineNumber: 1, text: "world", startIndex: 6, endIndex: 11, spans: [] },
     ],
-  });
+  };
 
-  assert.equal(client.requests[0].method, "nvim_exec_lua");
-  assert.deepEqual(client.requests[0].args[1], [3, ["hello", "world"]]);
+  assert.equal(await session.writeWebMirror(ticket, mirror), true);
+  session.publishWebMirror(ticket, mirror);
+  assert.equal(client.requests[1].method, "nvim_exec_lua");
+  assert.deepEqual(client.requests[1].args[1], [ticket, ["hello", "world"]]);
   assert.ok(emitted);
 }
 
@@ -140,7 +147,7 @@ async function testSetCursorUsesLuaBridge() {
   await session.setCursor(1000, 4, 7);
 
   assert.equal(client.requests[0].method, "nvim_exec_lua");
-  assert.deepEqual(client.requests[0].args[1], [1000, 4, 7]);
+  assert.deepEqual(client.requests[0].args[1], [1000, 4, 7, null]);
   assert.equal(client.requests[1].method, "nvim_exec_lua");
 }
 
@@ -213,3 +220,18 @@ await testClipboardCopyNotificationIsForwarded();
 await testExitNotificationIsForwarded();
 
 console.log("rpc-session tests passed");
+
+{
+  const client = new FakeClient(), session = new EmbeddedNvimSession(client);
+  session.start();
+  client.listener({method:'jusi:layout',args:[{type:'buffer',bufferId:3,kind:'web'}]});
+  client.listener({method:'jusi:web-session',args:[{bufferId:3,url:'https://example.com',providerId:'web',incarnation:1}]});
+  const identity={bufferId:3,sessionId:session.getWebSession(3).sessionId,incarnation:1};
+  client.requests=[];
+  await session.setBrowserLocation({...identity,document:{close(){}}},'https://next/');
+  assert.deepEqual(client.requests.at(-1),{method:'nvim_exec_lua',args:['return require("jusi_neovim.browser").location(...)',[identity,'https://next/']]});
+  const count=client.requests.length;
+  await session.setBrowserLocation({...identity,incarnation:2},'https://stale/');
+  assert.equal(client.requests.length,count);
+  assert.equal(session.getWebSession(3).url,'https://example.com');
+}

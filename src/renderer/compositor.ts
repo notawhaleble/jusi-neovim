@@ -35,6 +35,7 @@ export function placePopupmenu(args: {
   commandAreaTop?: number;
   popupHeight: number;
   popupWidth?: number;
+  commandAnchorLeft?: number;
 }): Rect {
   const { popupmenu, snapshot, stage } = args;
   const commandBoundaryTop = args.commandAreaTop ?? (stage.height - args.commandAreaHeight);
@@ -74,9 +75,10 @@ export function placePopupmenu(args: {
   };
 
   if (popupmenu.grid === -1) {
+    if (args.commandAnchorLeft === undefined) return { left: 0, top: 0, maxWidth: 0, maxHeight: 0 };
     const maxBottom = Math.max(0, commandBoundaryTop);
     const maxHeight = Math.max(0, Math.min(args.popupHeight, maxBottom));
-    const horizontal = clampHorizontal(8 + popupmenu.col * stage.cellWidth);
+    const horizontal = clampHorizontal(args.commandAnchorLeft);
     return {
       left: horizontal.left,
       top: Math.max(0, maxBottom - maxHeight),
@@ -89,6 +91,7 @@ export function placePopupmenu(args: {
     const anchorWindow = snapshot.windows.find((window) => {
       return window.tabId === snapshot.currentTabId && window.gridId === popupmenu.grid;
     });
+    if (!anchorWindow) return { left: 0, top: 0, maxWidth: 0, maxHeight: 0 };
     if (anchorWindow && typeof anchorWindow.row === "number" && typeof anchorWindow.col === "number") {
       const lineTop = (anchorWindow.row + popupmenu.row) * stage.cellHeight;
       const lineBottom = lineTop + stage.cellHeight;

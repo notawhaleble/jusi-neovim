@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src https: http: jusi-directory: about:; base-uri 'none'; form-action 'none'; object-src 'none'">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>jusi-neovim</title>
@@ -80,6 +81,7 @@
       }
 
       #grid-layer-root {
+        pointer-events: none;
         position: absolute;
         top: 0;
         left: 0;
@@ -182,6 +184,12 @@
 
       .cmdline-block-layer--visible {
         opacity: 1 !important;
+      }
+
+      .popupmenu-info {
+        white-space: pre-wrap;
+        max-width: 60ch;
+        opacity: 0.85;
       }
 
       .cmdline-block-line {
@@ -348,6 +356,7 @@
       }
 
       #web-view-layer {
+        pointer-events: none;
         position: absolute;
         top: 0;
         left: 0;
@@ -357,6 +366,7 @@
       }
 
       .web-view-box {
+        pointer-events: auto;
         position: absolute;
         border: 0;
         background: white;
@@ -410,6 +420,15 @@
         background: white;
       }
 
+      .presentation-text-status {
+        position: absolute; right: 6px; bottom: 6px; z-index: 20;
+        padding: 4px 8px; border: 1px solid #64748b; border-radius: 4px;
+        background: #172033; color: #fff; font: 12px system-ui; cursor: pointer;
+      }
+      .presentation-text-status[data-status="ready"] { border-color: #4ade80; }
+      .presentation-text-status[data-status="limited"],
+      .presentation-text-status[data-status="error"] { border-color: #fb7185; }
+
       .web-view-box__mirror-cursor {
         position: absolute;
         border: 1px solid #4f7cff;
@@ -429,6 +448,10 @@
         display: none;
       }
 
+      body:not(.debug-ui) [data-text-source="worker"] .presentation-text-status:not([data-status="error"]):not([data-status="limited"]),
+      body:not(.debug-ui) [data-provider-id="web"] .presentation-text-status,
+      body:not(.debug-ui) .browser-profile-label,
+      body:not(.debug-ui) .browser-popup-permission { display: none; }
       body.debug-ui .sidebar {
         display: block;
         padding: 18px;
@@ -485,6 +508,16 @@
         .sidebar {
           order: -1;
         }
+      }
+      .browser-popup-permission {
+        position: absolute; bottom: 36px; left: 6px; z-index: 5;
+        padding: 4px 8px; color: white; background: #18202f; border: 1px solid #64748b;
+        border-radius: 4px; font: 12px system-ui; cursor: pointer;
+      }
+      .browser-profile-label {
+        position: absolute; bottom: 6px; left: 6px; z-index: 5;
+        padding: 4px 8px; border-radius: 4px; background: #18202f;
+        color: #fff; font: 12px system-ui; pointer-events: none;
       }
     </style>
   </head>

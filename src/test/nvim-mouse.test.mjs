@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import {EmbeddedNvimSession} from '../../dist/bridge/rpc-session.js';
+import {validMouseInput} from '../../dist/core/mouse.js';
+import {mouseModifiers} from '../../dist/renderer/mouse.js';
+const calls=[];
+const client={onNotification(fn){this.notify=fn},onExit(){},async request(...args){calls.push(args)},async dispose(){}};
+const session=new EmbeddedNvimSession(client);session.start();
+const layout=event=>client.notify({method:'jusi:layout',args:[event]});
+const redraw=(...args)=>client.notify({method:'redraw',args});
+layout({type:'current-tab',tabId:7});layout({type:'tab',tabId:7,currentWindowId:1000});
+layout({type:'buffer',bufferId:3,kind:'text'});
+layout({type:'window',windowId:1000,tabId:7,bufferId:3,row:1,col:0,width:20,height:8});
+redraw(['grid_resize',[1,80,24]],['grid_resize',[2,20,8]],['win_pos',[2,1000,1,0,20,8]],['flush',[]]);
+const input={button:'left',action:'press',modifier:'SCAM',grid:2,row:3,col:4,tabId:7,windowId:1000};
+assert.equal(await session.mouseInput(input),true);
+assert.deepEqual(calls.at(-1),['nvim_input_mouse',['left','press','SCAM',2,3,4]]);
+assert.equal(mouseModifiers({shiftKey:true,ctrlKey:true,altKey:true,metaKey:true}),'SCAM');
+for(const patch of [{tabId:8},{windowId:1001},{grid:3},{grid:0},{row:NaN},{col:Infinity},{modifier:'bad'},{action:'up'},{button:'wheel',action:'press'}]) {
+ assert.equal(await session.mouseInput({...input,...patch}),false,JSON.stringify(patch));
+}
+for(const value of [null,{},42]) assert.equal(validMouseInput(value),false);
+assert.equal(await session.mouseInput({...input,button:'wheel',action:'down'}),true);
+assert.equal(await session.mouseInput({...input,action:'drag',row:-2,col:40}),true,'drag may leave original grid');
+redraw(['win_float_pos',[2,1000,'NW',1,1,0,false,50,0,1,0]],['flush',[]]);
+assert.equal(await session.mouseInput(input),false,'mouse-disabled float');
+redraw(['win_pos',[2,1000,1,0,20,8]],['flush',[]]);
+assert.equal(await session.mouseInput(input),true,'normal window restores mouse');
+layout({type:'window-close',windowId:1000});
+assert.equal(await session.mouseInput(input),false,'closed owner rejected before redraw flush');
+assert.equal(await session.mouseInput({...input,grid:1,windowId:undefined,row:0}),true,'native tabline uses root grid');
+layout({type:'current-tab',tabId:8});
+assert.equal(await session.mouseInput({...input,grid:1,windowId:undefined,action:'release'}),true,'tabline release survives its own tab switch');
+assert.equal(await session.mouseInput({...input,grid:1,windowId:undefined}),false,'new stale tabline press rejected');
+await session.dispose();
+assert.equal(await session.mouseInput(input),false);
+console.log('Mouse protocol validation, modifiers, explicit grid and stale ownership passed');

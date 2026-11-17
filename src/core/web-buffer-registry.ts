@@ -1,3 +1,5 @@
+import { presentationBackends } from "../backends/index.js";
+import { randomUUID } from "node:crypto";
 import { BufferRef, MirrorDocument, TabRef, WebBufferSession, WindowRef } from "./types.js";
 
 type VisibleState = {
@@ -16,6 +18,7 @@ export class WebBufferRegistry {
 
   registerBuffer(buffer: BufferRef): void {
     this.visibleState.buffers.set(buffer.id, buffer);
+    if (buffer.kind !== "web") this.sessions.delete(buffer.id);
   }
 
   unregisterBuffer(bufferId: number): void {
@@ -24,9 +27,13 @@ export class WebBufferRegistry {
     this.reconcile();
   }
 
-  registerSession(session: Omit<WebBufferSession, "attachedWindowId" | "lastKnownTabId">): void {
+  registerSession(session: Omit<WebBufferSession, "attachedWindowId" | "lastKnownTabId" | "sessionId" | "surface">): void {
+    const surface = { backend: "web", uri: session.url };
+    presentationBackends.resolve(surface);
     this.sessions.set(session.bufferId, {
+      surface,
       ...session,
+      sessionId: randomUUID(),
       attachedWindowId: null,
       lastKnownTabId: null,
     });

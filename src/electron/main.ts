@@ -1,9 +1,29 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, protocol, session as electronSession } from "electron";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { BrowserDocumentEvents } from './browser-document-events.js';
+import { BrowserFullscreen } from './browser-fullscreen.js';
+import { startBrowserTrace, traceBrowser, traceBrowserUrl, browserTraceEnabled, browserTraceMark } from './browser-trace.js';
+import { isFullscreenToggleInput, toggleFullscreen } from './browser-window-input.js';
+import { resetBrowserInputOnFocusBoundary } from './browser-input-boundary.js';
+import { observeBrowserLocation } from './browser-location.js';
+import { browserCommandForInput, dispatchBrowserCommand, zoomActionForInput as appZoomActionForInput } from '../backends/web/browser-commands.js';
+import { BrowserModeKeys } from '../backends/web/mode-keys.js';
+import { NativePopupCoordinator } from "./native-popups.js";
+import { NativeViewportExchange, nativeLayoutKey } from "./native-viewport.js";
+import { browserLinkUrl, installBrowserLinks } from "./browser-links.js";
+import { browserIndex } from "../backends/web/interaction.js";
+import { mirrorLinkTargetSource } from "../backends/web/document-scripts.js";
+import { browserPartition } from "../backends/web/partition.js";
+import { BrowserProfiles, type ProfileAction } from "./browser-profiles.js";
+import { directoryScheme, registerDirectoryProtocol, type ProtocolRegistry } from "../backends/web/local-preview.js";
+import { DocumentRevisions, DocumentTicket } from "../presentation/document-revisions.js";
+import { configureBrowserSession, browserPermissions, secureGuest } from "./browser-session.js";
+import { isGuestNavigationAllowed, isTrustedShellSender, localRootForUrl } from "./browser-policy.js";
+import { app, BrowserWindow, dialog, webContents, clipboard, ipcMain, Menu, nativeImage, protocol, session as electronSession } from "electron";
+import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PromisedNvimRpcClient } from "../bridge/promised-client.js";
+import { EmbeddedNvimRpcClient } from "../bridge/nvim-client.js";
 import { EmbeddedNvimSession, EmbeddedSessionState } from "../bridge/rpc-session.js";
 import { MirrorDocument, UiSnapshot } from "../core/types.js";
 import { RendererSessionState } from "../renderer/contracts.js";
@@ -13,8 +33,6 @@ const appDisplayName = "Jusi Neovim";
 const appLogoFile = "jusi-neovim-logo.png";
 const linuxExecutableName = "jusi-neovim";
 const linuxDesktopFileName = `${linuxExecutableName}.desktop`;
-const directoryScheme = "jusi-directory";
-const directoryProtocolRegistries = new WeakSet<object>();
 
 app.setName(appDisplayName);
 protocol.registerSchemesAsPrivileged([
@@ -108,6 +126,9 @@ function configureAppIdentity(): void {
           { role: "quit" },
         ],
       },
+      // Native macOS editing shortcuts require their application-menu roles.
+      // Let AppKit route them to the focused document, including native children.
+      { role: "editMenu" },
     ]));
     return;
   }
@@ -129,446 +150,6 @@ function shouldRunStartupDemo(): boolean {
 
 function shouldLogPerf(): boolean {
   return processEnv().JUSI_PERF === "1";
-}
-
-type ProtocolRegistry = {
-  handle: (
-    scheme: string,
-    handler: (request: { url: string }) => Response | Promise<Response>,
-  ) => void;
-  isProtocolHandled?: (scheme: string) => boolean;
-};
-
-async function registerDirectoryProtocol(registry: ProtocolRegistry = protocol): Promise<void> {
-  if (directoryProtocolRegistries.has(registry)) {
-    return;
-  }
-  directoryProtocolRegistries.add(registry);
-  if (registry.isProtocolHandled?.(directoryScheme)) {
-    return;
-  }
-  try {
-    registry.handle(directoryScheme, handleDirectoryProtocolRequest);
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("Failed to register protocol")) {
-      return;
-    }
-    throw error;
-  }
-}
-
-async function handleDirectoryProtocolRequest(request: { url: string }): Promise<Response> {
-  const url = new URL(request.url);
-  const filePath = url.searchParams.get("path");
-  if (!filePath) {
-    return htmlResponse("Directory not found", 404);
-  }
-
-  try {
-    const stats = statSync(filePath);
-    if (stats.isDirectory()) {
-      return htmlResponse(directoryListingHtml(filePath), 200);
-    }
-    if (stats.isFile()) {
-      return fileResponse(filePath, stats.size);
-    }
-    return htmlResponse("Path is not a regular file or directory", 404);
-  } catch (_error) {
-    return htmlResponse("Path not found", 404);
-  }
-}
-
-function htmlResponse(body: string, status: number): Response {
-  return new Response(body, {
-    status,
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-    },
-  });
-}
-
-function directoryListingHtml(filePath: string): string {
-  const entries = readdirSync(filePath, { withFileTypes: true })
-    .map((entry) => {
-      const childPath = join(filePath, entry.name);
-      const isDirectory = entry.isDirectory();
-      return {
-        href: localPathUrl(childPath),
-        name: entry.name + (isDirectory ? "/" : ""),
-        isDirectory,
-      };
-    })
-    .sort((left, right) => {
-      if (left.isDirectory !== right.isDirectory) {
-        return left.isDirectory ? -1 : 1;
-      }
-      return left.name.localeCompare(right.name);
-    });
-
-  const parent = dirname(filePath);
-  const parentLink = parent !== filePath
-    ? `<li><a href="${escapeAttribute(localPathUrl(parent))}">../</a></li>`
-    : "";
-  const items = entries.map((entry) => {
-    return `<li><a href="${escapeAttribute(entry.href)}">${escapeHtml(entry.name)}</a></li>`;
-  }).join("");
-
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>${escapeHtml(filePath)}</title>
-  <style>
-    ${localFilePageCss()}
-    h1 { font-size: 18px; margin: 0 0 16px; }
-    ul { list-style: none; padding: 0; margin: 0; }
-    li { padding: 3px 0; }
-  </style>
-</head>
-<body>
-  <h1>${escapeHtml(basename(filePath) || filePath)}</h1>
-  <ul>${parentLink}${items}</ul>
-</body>
-</html>`;
-}
-
-function fileResponse(filePath: string, size: number): Response {
-  const maxPreviewBytes = 2 * 1024 * 1024;
-  if (size > maxPreviewBytes) {
-    return rawFileResponse(filePath);
-  }
-  if (isMarkdownPath(filePath)) {
-    return htmlResponse(markdownFileHtml(filePath, readFileSync(filePath, "utf8")), 200);
-  }
-  if (shouldServeRawByExtension(filePath)) {
-    return rawFileResponse(filePath);
-  }
-
-  const content = readFileSync(filePath);
-  if (!isTextBuffer(content)) {
-    return rawFileResponse(filePath, content);
-  }
-
-  return htmlResponse(`<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>${escapeHtml(filePath)}</title>
-  <style>
-    ${localFilePageCss()}
-    h1 { font-size: 16px; margin: 0 0 16px; }
-    pre { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 1.45; margin: 0; white-space: pre-wrap; word-break: break-word; }
-  </style>
-</head>
-<body>
-  <h1>${escapeHtml(basename(filePath) || filePath)}</h1>
-  <pre>${escapeHtml(content.toString("utf8"))}</pre>
-</body>
-</html>`, 200);
-}
-
-function markdownFileHtml(filePath: string, source: string): string {
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>${escapeHtml(filePath)}</title>
-  <style>
-    ${localFilePageCss()}
-    main { max-width: 900px; }
-    h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.35em 0 0.55em; }
-    h1 { border-bottom: 1px solid #30363d; font-size: 2em; padding-bottom: 0.3em; }
-    h2 { border-bottom: 1px solid #30363d; font-size: 1.5em; padding-bottom: 0.25em; }
-    h3 { font-size: 1.25em; }
-    p, ul, ol, blockquote, pre { margin: 0 0 16px; }
-    ul, ol { padding-left: 1.6em; }
-    blockquote { border-left: 3px solid #3b434e; color: #9da7b3; padding-left: 12px; }
-    code, pre { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    code { background: #161b22; border-radius: 4px; padding: 0.15em 0.3em; }
-    pre { background: #161b22; border-radius: 6px; overflow: auto; padding: 12px; }
-    pre code { background: transparent; padding: 0; }
-    img { max-width: 100%; }
-    table { border-collapse: collapse; margin: 0 0 16px; }
-    th, td { border: 1px solid #30363d; padding: 6px 10px; }
-    @media (prefers-color-scheme: light) {
-      h1, h2 { border-bottom-color: #d0d7de; }
-      blockquote { border-left-color: #d0d7de; color: #57606a; }
-      code, pre { background: #f6f8fa; }
-      th, td { border-color: #d0d7de; }
-    }
-  </style>
-</head>
-<body>
-  <main>${renderMarkdown(source, dirname(filePath))}</main>
-</body>
-</html>`;
-}
-
-function rawFileResponse(filePath: string, content = readFileSync(filePath)): Response {
-  return new Response(new Uint8Array(content), {
-    status: 200,
-    headers: {
-      "content-type": mimeTypeForPath(filePath),
-      "content-disposition": `inline; filename="${escapeHeaderValue(basename(filePath) || "file")}"`,
-    },
-  });
-}
-
-function localFilePageCss(): string {
-  return `
-    :root { color-scheme: light dark; }
-    body { background: #0d1117; color: #e6edf3; font: 14px system-ui, sans-serif; margin: 24px; }
-    a { color: #8ab4f8; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    @media (prefers-color-scheme: light) {
-      body { background: #ffffff; color: #1f2328; }
-      a { color: #0969da; }
-    }
-  `;
-}
-
-function isTextBuffer(content: Buffer): boolean {
-  return !content.includes(0);
-}
-
-function isMarkdownPath(filePath: string): boolean {
-  const ext = extname(filePath).toLowerCase();
-  return ext === ".md" || ext === ".markdown";
-}
-
-function shouldServeRawByExtension(filePath: string): boolean {
-  const ext = extname(filePath).toLowerCase();
-  return [
-    ".pdf",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".webp",
-    ".svg",
-    ".ico",
-    ".mp4",
-    ".webm",
-    ".mp3",
-    ".wav",
-    ".wasm",
-  ].includes(ext);
-}
-
-function renderMarkdown(source: string, basePath: string): string {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  const blocks: string[] = [];
-  let paragraph: string[] = [];
-  let listItems: string[] = [];
-  let listType: "ul" | "ol" | null = null;
-  let inFence = false;
-  let fenceLines: string[] = [];
-
-  const flushParagraph = () => {
-    if (paragraph.length === 0) {
-      return;
-    }
-    blocks.push(`<p>${renderMarkdownInline(paragraph.join(" "), basePath)}</p>`);
-    paragraph = [];
-  };
-  const flushList = () => {
-    if (!listType) {
-      return;
-    }
-    blocks.push(`<${listType}>${listItems.join("")}</${listType}>`);
-    listItems = [];
-    listType = null;
-  };
-
-  for (const line of lines) {
-    const fence = /^```/.exec(line);
-    if (fence) {
-      if (inFence) {
-        blocks.push(`<pre><code>${escapeHtml(fenceLines.join("\n"))}</code></pre>`);
-        fenceLines = [];
-        inFence = false;
-      } else {
-        flushParagraph();
-        flushList();
-        inFence = true;
-      }
-      continue;
-    }
-    if (inFence) {
-      fenceLines.push(line);
-      continue;
-    }
-
-    if (/^\s*$/.test(line)) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
-    if (heading) {
-      flushParagraph();
-      flushList();
-      const level = heading[1].length;
-      blocks.push(`<h${level}>${renderMarkdownInline(heading[2].trim(), basePath)}</h${level}>`);
-      continue;
-    }
-
-    const unordered = /^\s*[-*+]\s+(.+)$/.exec(line);
-    if (unordered) {
-      flushParagraph();
-      if (listType !== "ul") {
-        flushList();
-        listType = "ul";
-      }
-      listItems.push(`<li>${renderMarkdownInline(unordered[1], basePath)}</li>`);
-      continue;
-    }
-
-    const ordered = /^\s*\d+[.)]\s+(.+)$/.exec(line);
-    if (ordered) {
-      flushParagraph();
-      if (listType !== "ol") {
-        flushList();
-        listType = "ol";
-      }
-      listItems.push(`<li>${renderMarkdownInline(ordered[1], basePath)}</li>`);
-      continue;
-    }
-
-    const quote = /^>\s?(.*)$/.exec(line);
-    if (quote) {
-      flushParagraph();
-      flushList();
-      blocks.push(`<blockquote>${renderMarkdownInline(quote[1], basePath)}</blockquote>`);
-      continue;
-    }
-
-    paragraph.push(line.trim());
-  }
-
-  if (inFence) {
-    blocks.push(`<pre><code>${escapeHtml(fenceLines.join("\n"))}</code></pre>`);
-  }
-  flushParagraph();
-  flushList();
-  return blocks.join("\n");
-}
-
-function renderMarkdownInline(source: string, basePath: string): string {
-  const tokens: string[] = [];
-  let text = source.replace(/`([^`]+)`/g, (_match, code: string) => {
-    const token = `\u0000${tokens.length}\u0000`;
-    tokens.push(`<code>${escapeHtml(code)}</code>`);
-    return token;
-  });
-
-  text = escapeHtml(text)
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, href: string) => {
-      return `<img alt="${escapeAttribute(alt)}" src="${escapeAttribute(markdownUrl(href, basePath))}">`;
-    })
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, href: string) => {
-      return `<a href="${escapeAttribute(markdownUrl(href, basePath))}">${label}</a>`;
-    })
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
-
-  return text.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => tokens[Number(index)] ?? "");
-}
-
-function markdownUrl(rawHref: string, basePath: string): string {
-  const href = rawHref.trim();
-  if (href.startsWith("#")) {
-    return href;
-  }
-  try {
-    const parsed = new URL(href);
-    if (parsed.protocol === "file:") {
-      return localPathUrl(fileURLToPath(parsed));
-    }
-    if (parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "mailto:") {
-      return href;
-    }
-    return "#";
-  } catch (_error) {
-    const hashIndex = href.indexOf("#");
-    const pathPart = hashIndex >= 0 ? href.slice(0, hashIndex) : href;
-    const hashPart = hashIndex >= 0 ? href.slice(hashIndex) : "";
-    return localPathUrl(resolve(basePath, pathPart)) + hashPart;
-  }
-}
-
-function mimeTypeForPath(filePath: string): string {
-  switch (extname(filePath).toLowerCase()) {
-    case ".pdf":
-      return "application/pdf";
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".svg":
-      return "image/svg+xml";
-    case ".ico":
-      return "image/x-icon";
-    case ".mp4":
-      return "video/mp4";
-    case ".webm":
-      return "video/webm";
-    case ".mp3":
-      return "audio/mpeg";
-    case ".wav":
-      return "audio/wav";
-    case ".wasm":
-      return "application/wasm";
-    case ".json":
-      return "application/json; charset=utf-8";
-    case ".html":
-    case ".htm":
-      return "text/html; charset=utf-8";
-    case ".css":
-      return "text/css; charset=utf-8";
-    case ".js":
-    case ".mjs":
-      return "text/javascript; charset=utf-8";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-function escapeHeaderValue(value: string): string {
-  return value.replace(/["\\\r\n]/g, "_");
-}
-
-function localPathUrl(filePath: string): string {
-  const url = new URL(`${directoryScheme}://open/`);
-  url.searchParams.set("path", filePath);
-  return url.href;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => {
-    switch (char) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case "\"":
-        return "&quot;";
-      default:
-        return "&#39;";
-    }
-  });
-}
-
-function escapeAttribute(value: string): string {
-  return escapeHtml(value);
 }
 
 function shouldUseElectronClipboard(): boolean {
@@ -650,6 +231,7 @@ function toRendererState(state: EmbeddedSessionState): RendererSessionState {
   const snapshot = snapshotForRenderer(state.snapshot, debugUi);
   return {
     debugUi,
+    presentationBufferIds: state.presentationBufferIds,
     snapshot,
     attachedWebViews: state.attachedWebViews,
     screen: debugUi ? state.screen : { ...state.screen, cells: undefined },
@@ -670,60 +252,38 @@ function isModifierOnlyKey(key: string): boolean {
   return key === "Shift" || key === "Control" || key === "Alt" || key === "Meta";
 }
 
-function isFullscreenToggleInput(input: { type?: string; key?: string; code?: string; control?: boolean; meta?: boolean }): boolean {
-  if (input.type !== "keyDown") {
-    return false;
-  }
-  const key = String(input.key ?? "");
-  return key === "F11" || (input.control === true && input.meta === true && isPhysicalKeyInput(input, "KeyF"));
-}
-
-function appZoomActionForInput(input: { type?: string; key?: string; code?: string; control?: boolean; meta?: boolean }): "in" | "out" | "reset" | null {
-  if (input.type !== "keyDown" || (input.meta !== true && input.control !== true)) {
-    return null;
-  }
-  const key = String(input.key ?? "");
-  const code = String(input.code ?? "");
-  if (key === "+" || key === "=" || code === "Equal" || code === "NumpadAdd") {
-    return "in";
-  }
-  if (key === "-" || code === "Minus" || code === "NumpadSubtract") {
-    return "out";
-  }
-  if (key === "0" || code === "Digit0" || code === "Numpad0") {
-    return "reset";
-  }
-  return null;
-}
-
-function isWebviewReloadInput(input: { type?: string; code?: string; control?: boolean; meta?: boolean }): boolean {
-  return (input.meta === true || input.control === true) && isPhysicalKeyInput(input, "KeyR");
-}
-
-function toggleFullscreen(win: BrowserWindow): void {
-  const fullscreenWindow = win as unknown as {
-    isFullScreen?: () => boolean;
-    setFullScreen?: (fullscreen: boolean) => void;
-  };
-  fullscreenWindow.setFullScreen?.(!(fullscreenWindow.isFullScreen?.() ?? false));
-}
-
-function applyWebviewZoom(contents: any, action: "in" | "out" | "reset"): void {
-  const current = typeof contents.getZoomFactor === "function" ? Number(contents.getZoomFactor()) : 1;
-  const base = Number.isFinite(current) && current > 0 ? current : 1;
-  const next = action === "reset"
-    ? 1
-    : action === "in"
-      ? base * 1.1
-      : base / 1.1;
-  const clamped = Math.max(0.3, Math.min(3, next));
-  contents.setZoomFactor?.(clamped);
-}
-
 async function createWindow(): Promise<void> {
   configureAppIdentity();
-  const client = await PromisedNvimRpcClient.spawn({ clean: shouldLaunchCleanNvim() });
+  const client = await EmbeddedNvimRpcClient.spawn({ clean: shouldLaunchCleanNvim() });
   const session = new EmbeddedNvimSession(client);
+  let closing = false;
+  const documents = new DocumentRevisions(ticket => session.invalidateWebDocument(ticket));
+  const resetBrowserKeys = new WeakMap<object, () => void>();
+  const guests = new Map<number, { contents: any; ready: boolean; sessionId?: string; bufferId?: number }>();
+  const revokeGuest = (guest: { sessionId?: string; bufferId?: number }) => {
+    if (closing || guest.bufferId === undefined || !guest.sessionId) return;
+    const current = session.getWebSession(guest.bufferId);
+    if (current?.sessionId !== guest.sessionId || current.incarnation === undefined) {
+      documents.forget(guest.sessionId);
+      return;
+    }
+    void session.setBrowserTextStatus(current, "idle");
+    void documents.advance({ bufferId: guest.bufferId, sessionId: guest.sessionId, incarnation: current.incarnation })
+      .catch(error => console.error("[document-invalidation]", error));
+  };
+  const traceSetting = processEnv().JUSI_BROWSER_TRACE;
+  if (traceSetting && traceSetting !== '0') startBrowserTrace(traceSetting === '1' ? join(app.getPath('userData'), 'browser-traces') : resolve(traceSetting));
+  if (browserTraceEnabled()) {
+    const hashes: Record<string,string> = {};
+    for (const [label,path] of [
+      ['main',join(currentDir(),'main.js')],['fullscreen',join(currentDir(),'browser-fullscreen.js')],
+      ['input',join(currentDir(),'browser-document-events.js')],['clicks',join(currentDir(),'../backends/web/link-clicks.js')],['browser-runtime',join(projectRoot(),'runtime/lua/jusi_neovim/browser.lua')],
+    ]) {
+      try { hashes[label] = createHash('sha256').update(readFileSync(path)).digest('hex'); }
+      catch { hashes[label] = 'unreadable'; }
+    }
+    traceBrowser('trace.build', {hashes});
+  }
   const win = new BrowserWindow({
     title: appDisplayName,
     icon: appIcon(),
@@ -732,27 +292,146 @@ async function createWindow(): Promise<void> {
     webPreferences: {
       preload: preloadScript(),
       contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
       nodeIntegration: false,
       webviewTag: true,
+      disableHtmlFullscreenWindowResize: true,
     },
+  });
+  if (browserTraceEnabled()) for (const name of ['focus','blur','enter-full-screen','leave-full-screen','enter-html-full-screen','leave-html-full-screen','close']) {
+    win.on(name as any, () => traceBrowser('host.' + name, {window:win.id,fullscreen:win.isFullScreen(),focused:win.isFocused()}));
+  }
+  win.on("close", () => {
+    closing = true;
+    for (const guest of guests.values()) if (guest.sessionId) documents.forget(guest.sessionId);
   });
   win.setTitle?.(appDisplayName);
   win.setIcon?.(appIcon());
   (win as unknown as { setMenu?: (menu: null) => void }).setMenu?.(null);
 
-  win.webContents.on("console-message", (_event, _level, message) => {
-    console.log("[renderer]", message);
+  win.webContents.on("console-message", (event) => {
+    console.log("[renderer]", event.message);
   });
-  win.webContents.on("will-attach-webview", (_event, _webPreferences, params) => {
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  win.webContents.on("will-navigate", (event) => event.preventDefault());
+  const profiles = new BrowserProfiles(name => {
+    const target = electronSession.fromPartition(`persist:jusi-web-${name}`);
+    configureBrowserSession(target, false);
+    return target;
+  }, browserPermissions, target => webContents.getAllWebContents().some(contents =>
+    !contents.isDestroyed() && contents.session === target),
+  async (name, action) => {
+    const answer = await dialog.showMessageBox(win, {
+      type: "warning", title: "Browser profile", buttons: ["Cancel", action === "clear" ? "Clear profile data" : "Revoke grants"],
+      defaultId: 0, cancelId: 0, noLink: true,
+      message: action === "clear" ? `Clear browser data for profile "${name}"?` : `Revoke session permissions for profile "${name}"?`,
+      detail: action === "clear"
+        ? "This signs you out and removes this profile's cookies, site storage, caches and session grants. It cannot be undone. Downloaded files, Neovim text and other profiles are not removed."
+        : "Camera and microphone grants for this profile will be forgotten. Sites must ask again. Other profiles and OS permissions are unchanged.",
+    });
+    return !closing && answer.response === 1;
+  });
+  const profileFeedback = (result: { ok: boolean; message: string }) => client.request("nvim_exec_lua", [
+    'local result = ...; require("jusi_web").profile_result(result)', [result],
+  ]).catch(error => console.error("[browser-profile]", error));
+  const profileOpenBlocked = (name: string) => {
+    void profileFeedback({ ok: false, message: `Profile ${name} is busy. Close this new buffer and reopen after the profile operation finishes.` });
+  };
+  client.onNotification(notification => {
+    if (notification.method !== "jusi:browser-profile") return;
+    const request = notification.args[0] as { profile?: unknown; action?: unknown };
+    void profiles.run(request?.profile as string, request?.action as ProfileAction)
+      .then(message => ({ ok: true, message }), error => ({ ok: false, message: String(error) }))
+      .then(profileFeedback);
+  });
+  const browserApiInfo = await client.request("nvim_get_api_info", []);
+  const browserChannel = Array.isArray(browserApiInfo) ? Number(browserApiInfo[0]) : 0;
+  if (!Number.isSafeInteger(browserChannel) || browserChannel <= 0) throw new Error("Browser RPC channel unavailable");
+  await client.request("nvim_exec_lua", ["vim.g.jusi_browser_rpc_channel = ...", [browserChannel]]);
+  const profileNames = new WeakMap<object, string>();
+  const linkControllers = new Map<number, ReturnType<typeof installBrowserLinks>>();
+  let nativePopups: NativePopupCoordinator | undefined;
+  const popupControllers = new Map<number, { arm(scope: string): boolean; resetInput(): void }>();
+  const localSessions = new WeakSet<object>();
+  win.webContents.on("will-attach-webview", (event, preferences, params) => {
     const partition = typeof params.partition === "string" ? params.partition : "";
-    if (partition) {
-      void registerDirectoryProtocol(electronSession.fromPartition(partition).protocol as ProtocolRegistry);
+    const profileName = partition.startsWith("persist:jusi-web-") ? partition.slice("persist:jusi-web-".length) : "";
+    if (profileName && profiles.isBusy(profileName)) { event.preventDefault(); profileOpenBlocked(profileName); return; }
+    const local = /^jusi-local-[a-f0-9-]+$/.test(partition);
+    if ((!local && !/^persist:jusi-web-[a-zA-Z0-9_-]{1,64}$/.test(partition) && !/^jusi-private-[a-f0-9-]+$/.test(partition)) || !isGuestNavigationAllowed(params.src, local)) {
+      event.preventDefault();
+      return;
     }
+    delete preferences.preload;
+    preferences.nodeIntegration = false;
+    preferences.nodeIntegrationInSubFrames = false;
+    preferences.nodeIntegrationInWorker = false;
+    preferences.contextIsolation = true;
+    preferences.sandbox = true;
+    preferences.webSecurity = true;
+    preferences.allowRunningInsecureContent = false;
+    preferences.webviewTag = false;
+    preferences.disableHtmlFullscreenWindowResize = true;
+    const guestSession = electronSession.fromPartition(partition);
+    if (profileName) profileNames.set(guestSession, profileName);
+    configureBrowserSession(guestSession, local);
+    if (local) {
+      localSessions.add(guestSession);
+      try { registerDirectoryProtocol(guestSession.protocol as ProtocolRegistry, localRootForUrl(params.src)); }
+      catch { event.preventDefault(); }
+    }
+  });
+  win.webContents.on("did-attach-webview", (_event, contents) => {
+    const profileName = profileNames.get(contents.session);
+    if (profileName && profiles.isBusy(profileName)) { contents.close(); profileOpenBlocked(profileName); return; }
+    secureGuest(contents, localSessions.has(contents.session));
+    const identity = () => {
+      const guest = guests.get(contents.id);
+      const current = guest?.bufferId === undefined ? undefined : session.getWebSession(guest.bufferId);
+      return current && typeof current.incarnation === "number" && current.sessionId === guest?.sessionId
+        ? { bufferId: current.bufferId, sessionId: current.sessionId, incarnation: current.incarnation } : undefined;
+    };
+    const local = localSessions.has(contents.session);
+    const events = browserEvents.install(contents, identity, local);
+    popupControllers.set(contents.id, { resetInput: events.resetInput, arm: nativePopups!.installOpener(contents, identity, local, events.trace) });
+    contents.once("destroyed", () => popupControllers.delete(contents.id));
+    const guest = { contents, ready: false } as { contents: any; ready: boolean; sessionId?: string; bufferId?: number };
+    guests.set(contents.id, guest);
+    observeBrowserLocation(contents, () => {
+      const current = guest.bufferId === undefined ? undefined : session.getWebSession(guest.bufferId);
+      return current?.sessionId === guest.sessionId && current?.incarnation !== undefined
+        ? {bufferId: current.bufferId, sessionId: current.sessionId, incarnation: current.incarnation} : undefined;
+    }, (owner, url) => session.setBrowserLocation(owner, url), error => console.error('[browser-location]', error));
+    contents.on("before-mouse-event", (_event: unknown, mouse: { type: string; button?: string; x: number; y: number }) => {
+      if (!guest.ready || mouse.type !== "mouseDown" || mouse.button !== "left" || guest.bufferId === undefined) return;
+      const current = session.getWebSession(guest.bufferId);
+      const snapshot = session.getSnapshot();
+      const window = snapshot.windows.find(window => window.id === current?.attachedWindowId
+        && window.bufferId === guest.bufferId && window.tabId === snapshot.currentTabId);
+      if (!current || current.sessionId !== guest.sessionId || !window) return;
+      if (pendingStateTimer) clearTimeout(pendingStateTimer);
+      flushPendingState();
+      win.webContents.send("jusi:browser-pointer", { bufferId: current.bufferId, sessionId: current.sessionId,
+        incarnation: current.incarnation, windowId: window.id, documentRevision: current.mirror?.version,
+        x: mouse.x, y: mouse.y });
+    });
+    linkControllers.set(contents.id, installBrowserLinks(contents, win, localSessions.has(contents.session), !profileName,
+      () => browserEvents.activeTarget(identity()), token => win.webContents.send("jusi:browser-link-selected", { guestId: contents.id, token })));
+    contents.once("destroyed", () => linkControllers.delete(contents.id));
+    contents.on("did-start-navigation", (_event: unknown, _url: string, inPlace: boolean, mainFrame: boolean) => {
+      if (!mainFrame || inPlace) return;
+      guest.ready = false;
+      revokeGuest(guest);
+    });
+    contents.on("dom-ready", () => { guest.ready = true; });
+    contents.on("render-process-gone", () => { guest.ready = false; revokeGuest(guest); });
+    contents.on("destroyed", () => { guest.ready = false; revokeGuest(guest); guests.delete(contents.id); });
   });
   win.webContents.on("before-input-event", (event, input) => {
     if (isFullscreenToggleInput(input)) {
       event.preventDefault();
-      toggleFullscreen(win);
+      toggleFullscreen(win, input.isAutoRepeat);
       return;
     }
 
@@ -765,7 +444,7 @@ async function createWindow(): Promise<void> {
 
     if (input.type === "keyDown" && isTabKey(input.key)) {
       event.preventDefault();
-      void session.input("<Tab>");
+      void session.input(input.shift ? "<S-Tab>" : "<Tab>");
       return;
     }
 
@@ -781,6 +460,8 @@ async function createWindow(): Promise<void> {
   });
 
   session.start();
+  const nativeViewport = new NativeViewportExchange(() => nativePopups?.park());
+  let lastPublishedState: RendererSessionState | null = null;
   let pendingState: EmbeddedSessionState | null = null;
   let pendingStateTimer: ReturnType<typeof setTimeout> | null = null;
   const flushPendingState = () => {
@@ -792,7 +473,8 @@ async function createWindow(): Promise<void> {
     const state = pendingState;
     pendingState = null;
     const startedAt = nowMs();
-    const rendererState = toRendererState(state);
+    const rendererState = { ...toRendererState(state), nativeLayoutGeneration: nativeViewport.generation };
+    lastPublishedState = rendererState;
     const serializedBytes = shouldLogPerf() ? Buffer.byteLength(JSON.stringify(rendererState), "utf8") : 0;
     const serializeMs = nowMs() - startedAt;
     win.webContents.send("jusi:state", rendererState);
@@ -803,7 +485,26 @@ async function createWindow(): Promise<void> {
       ...stateMetrics(rendererState),
     });
   };
+  let tracedLayout = '';
+  let nativeLayout = '';
   session.onStateChanged((state) => {
+    if (browserTraceEnabled()) {
+      const snapshot = session.getSnapshot();
+      const layout = {tab:snapshot.currentTabId,tabs:snapshot.tabs.map(t=>({id:t.id,currentWindow:t.currentWindowId})),
+        windows:snapshot.windows.map(w=>({id:w.id,tab:w.tabId,buffer:w.bufferId,grid:w.gridId}))};
+      const serialized = JSON.stringify(layout);
+      if (serialized !== tracedLayout) { tracedLayout = serialized; traceBrowser('layout', layout); }
+    }
+    const layoutKey = nativeLayoutKey(state, bufferId => session.getWebSession(bufferId));
+    if (layoutKey !== nativeLayout) { nativeLayout = layoutKey; nativeViewport.invalidate(); }
+    for (const guest of guests.values()) {
+      if (guest.bufferId === undefined || !guest.sessionId) continue;
+      if (session.getWebSession(guest.bufferId)?.sessionId !== guest.sessionId) {
+        documents.forget(guest.sessionId);
+        guest.ready = false;
+        if (!guest.contents.isDestroyed()) guest.contents.close();
+      }
+    }
     pendingState = state;
     if (pendingStateTimer) {
       return;
@@ -815,24 +516,63 @@ async function createWindow(): Promise<void> {
     if (destroyed) {
       return;
     }
-    win.webContents.send("jusi:web-scroll", event);
+    const current = session.getWebSession(event.bufferId);
+    if (!current) return;
+    const cursor = session.getSnapshot().windows.find(window => window.id === event.windowId
+      && window.bufferId === event.bufferId)?.cursor ?? null;
+    const target = { ...event, sessionId: current.sessionId, incarnation: current.incarnation,
+      cursor, documentRevision: current.mirror?.version };
+    if (nativePopups?.interact(target, { kind: 'scroll', lines: event.lines })) return;
+    if (pendingStateTimer) clearTimeout(pendingStateTimer);
+    flushPendingState();
+    win.webContents.send("jusi:web-scroll", target);
   });
   session.onWebOpenLink((event) => {
     const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
     if (destroyed) {
       return;
     }
-    win.webContents.send("jusi:web-open-link", event);
+    const current = session.getWebSession(event.bufferId);
+    if (!current) return;
+    const cursor = session.getSnapshot().windows.find(window => window.id === event.windowId
+      && window.bufferId === event.bufferId)?.cursor ?? null;
+    const target = { ...event, sessionId: current.sessionId, incarnation: current.incarnation,
+      cursor, documentRevision: current.mirror?.version };
+    if (nativePopups?.interact(target, { kind: 'link' })) return;
+    if (pendingStateTimer) clearTimeout(pendingStateTimer);
+    flushPendingState();
+    win.webContents.send("jusi:web-open-link", target);
+  });
+  session.onWebRegion((event) => {
+    const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
+    if (destroyed) {
+      return;
+    }
+    const current = session.getWebSession(event.bufferId);
+    if (!current) return;
+    const cursor = session.getSnapshot().windows.find(window => window.id === event.windowId
+      && window.bufferId === event.bufferId)?.cursor ?? null;
+    const target = { ...event, sessionId: current.sessionId, incarnation: current.incarnation,
+      cursor, documentRevision: current.mirror?.version };
+    if (nativePopups?.interact(target, { kind: 'region', direction: event.direction })) return;
+    if (pendingStateTimer) clearTimeout(pendingStateTimer);
+    flushPendingState();
+    win.webContents.send("jusi:web-region", target);
   });
   session.onWebEnterMode((event) => {
     const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
     if (destroyed) {
       return;
     }
+    if (nativePopups?.enter(event.bufferId, event.windowId)) return;
+    if (pendingStateTimer) clearTimeout(pendingStateTimer);
+    flushPendingState();
     win.webContents.send("jusi:web-enter-mode", event);
   });
   let neovimExited = false;
   session.onExit(() => {
+    closing = true;
+    for (const guest of guests.values()) if (guest.sessionId) documents.forget(guest.sessionId);
     neovimExited = true;
     const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
     if (!destroyed) {
@@ -847,7 +587,7 @@ async function createWindow(): Promise<void> {
       if (request.method !== "jusi:clipboard-paste") {
         return undefined;
       }
-      return registerFromClipboardText(clipboard.readText());
+      return clipboard.readText().then(registerFromClipboardText);
     });
   }
 
@@ -858,7 +598,6 @@ async function createWindow(): Promise<void> {
     await session.installClipboardProvider(runtimePluginScript());
   }
   const pendingWebviewWindowCommands = new WeakMap<object, ReturnType<typeof setTimeout>>();
-  const pendingWebviewNormalModeCommands = new WeakMap<object, ReturnType<typeof setTimeout>>();
   const routedChildWebContents = new WeakSet<object>();
   const isHostedByWindow = (contents: any): boolean => {
     let host = contents.hostWebContents;
@@ -877,28 +616,44 @@ async function createWindow(): Promise<void> {
     routedChildWebContents.add(contents);
 
     const leaveWebMode = () => {
+      browserEvents.fullscreen.exit(contents);
       win.webContents.focus();
       win.webContents.send("jusi:leave-web-mode");
     };
 
+    const modeKeys = new BrowserModeKeys();
+    const resetKeys = () => {
+      modeKeys.reset();
+      popupControllers.get(contents.id)?.resetInput();
+      const timer = pendingWebviewWindowCommands.get(contents);
+      if (timer) clearTimeout(timer);
+      pendingWebviewWindowCommands.delete(contents);
+    };
+    resetBrowserKeys.set(contents, resetKeys);
+    resetBrowserInputOnFocusBoundary(contents, win, resetKeys);
+    contents.on('did-start-navigation', (_event: unknown, _url: string, inPlace: boolean, main: boolean) => {
+      if (main && !inPlace) resetKeys();
+    });
+
     contents.on("before-input-event", (event: any, input: any) => {
+      if (input.isComposing) { resetKeys(); return; }
+      const modeAction = modeKeys.accept(input);
+      if (modeAction) {
+        event.preventDefault();
+        if (modeAction === 'close') void session.command('JusiClose').finally(leaveWebMode);
+        else if (modeAction === 'text') leaveWebMode();
+        return;
+      }
+
       if (isFullscreenToggleInput(input)) {
         event.preventDefault();
-        toggleFullscreen(win);
+        toggleFullscreen(win, input.isAutoRepeat);
         return;
       }
 
-      const zoomAction = appZoomActionForInput(input);
-      if (zoomAction) {
+      const command = browserCommandForInput(input, currentPlatform());
+      if (command && dispatchBrowserCommand(contents, command, () => win.webContents.send('jusi:web-zoomed'), url => { void session.setRegister('*',url); })) {
         event.preventDefault();
-        applyWebviewZoom(contents, zoomAction);
-        win.webContents.send("jusi:web-zoomed");
-        return;
-      }
-
-      if (isWebviewReloadInput(input)) {
-        event.preventDefault();
-        contents.reload?.();
         return;
       }
 
@@ -912,28 +667,6 @@ async function createWindow(): Promise<void> {
       }
 
       const key = typeof input.key === "string" ? input.key : "";
-      const pendingNormalTimeout = pendingWebviewNormalModeCommands.get(contents);
-      if (pendingNormalTimeout && isModifierOnlyKey(key)) {
-        return;
-      }
-      if (pendingNormalTimeout) {
-        clearTimeout(pendingNormalTimeout);
-        pendingWebviewNormalModeCommands.delete(contents);
-        if (input.control && isPhysicalKeyInput(input, "KeyN")) {
-          event.preventDefault();
-          leaveWebMode();
-          return;
-        }
-      }
-
-      if (input.control && (key === "\\" || key === "Backslash" || input.code === "Backslash")) {
-        event.preventDefault();
-        const timeout = setTimeout(() => {
-          pendingWebviewNormalModeCommands.delete(contents);
-        }, 1200);
-        pendingWebviewNormalModeCommands.set(contents, timeout);
-        return;
-      }
 
       if (input.control && isPhysicalKeyInput(input, "KeyJ")) {
         event.preventDefault();
@@ -945,22 +678,6 @@ async function createWindow(): Promise<void> {
         event.preventDefault();
         const url = typeof contents.getURL === "function" ? contents.getURL() : "";
         void session.setRegister("*", url);
-        return;
-      }
-
-      if (input.control && isPhysicalKeyInput(input, "KeyO")) {
-        event.preventDefault();
-        if (typeof contents.canGoBack !== "function" || contents.canGoBack()) {
-          contents.goBack?.();
-        }
-        return;
-      }
-
-      if (input.control && (isPhysicalKeyInput(input, "KeyI") || key === "Tab")) {
-        event.preventDefault();
-        if (typeof contents.canGoForward !== "function" || contents.canGoForward()) {
-          contents.goForward?.();
-        }
         return;
       }
 
@@ -1019,47 +736,268 @@ async function createWindow(): Promise<void> {
     }
   }
 
-  ipcMain.handle("jusi:get-initial-state", async () => {
-    return toRendererState({
-      snapshot: session.getSnapshot(),
-      attachedWebViews: session.getAttachedWebViews(),
-      screen: session.getScreenState(),
-      grids: session.getGridStates(),
-      cmdline: session.getCmdlineState(),
-      popupmenu: session.getPopupmenuState(),
-      messages: session.getMessageState(),
-    });
+  const invalidateViewport = (invalidate = true) => {
+    if (invalidate) nativeViewport.invalidate();
+    if (lastPublishedState && !pendingState && !win.webContents.isDestroyed()) {
+      lastPublishedState = { ...lastPublishedState, nativeLayoutGeneration: nativeViewport.generation };
+      win.webContents.send("jusi:state", lastPublishedState);
+    }
+  };
+  const feedback = (message: string) => { void profileFeedback({ ok: true, message }); };
+  const browserEvents = new BrowserDocumentEvents(win, client, session, new BrowserFullscreen(win, invalidateViewport), feedback);
+  {
+    nativePopups = new NativePopupCoordinator(win, client, session, invalidateViewport,
+      browserEvents, feedback, processEnv().JUSI_DEBUG_UI === "1");
+    await nativePopups.start();
+    win.on("close", () => { browserEvents.fullscreen.dispose(); nativePopups?.dispose(); });
+  }
+  client.onNotification(notification => {
+    if (notification.method !== 'jusi:browser-command') return;
+    const request = notification.args[0] as {bufferId: number;windowId: number;incarnation: number;action: string};
+    const current = request && session.getWebSession(request.bufferId);
+    const snapshot = session.getSnapshot();
+    if (!current || current.providerId !== 'web' || current.incarnation !== request.incarnation
+      || !snapshot.windows.some(w => w.id === request.windowId && w.bufferId === request.bufferId && w.tabId === snapshot.currentTabId)) return;
+    const guest = [...guests.values()].find(g => g.bufferId === current.bufferId && g.sessionId === current.sessionId);
+    const contents = nativePopups?.contentsFor(current.bufferId) ?? guest?.contents;
+    if (!contents || contents.isDestroyed()) return;
+    const target = {bufferId:current.bufferId,windowId:request.windowId,sessionId:current.sessionId,incarnation:current.incarnation};
+    traceBrowser('browser.command', {contents:contents.id,buffer:current.bufferId,window:request.windowId,incarnation:current.incarnation,action:request.action,autoRefresh:current.autoRefresh});
+    if (request.action === 'debug-mark') {
+      void browserTraceMark({contents:contents.id,buffer:current.bufferId,window:request.windowId,tab:snapshot.currentTabId,
+        fullscreen:win.isFullScreen(),focused:contents.isFocused(),url:traceBrowserUrl(contents.getURL()),autoRefresh:current.autoRefresh})
+        .then(directory => profileFeedback({ok:!!directory,message:directory ? `Browser debug marker saved: ${directory}` : 'Browser tracing is off or unavailable. Restart with JUSI_BROWSER_TRACE=1.'}));
+      return;
+    }
+    if (request.action === 'devtools') {
+      const ok = dispatchBrowserCommand(contents, 'devtools', () => {});
+      if (!ok) void profileFeedback({ok:false,message:'DevTools unavailable for this browser document.'});
+      return;
+    }
+    if (request.action === 'copy-url') { void session.setRegister('*', contents.getURL()); return; }
+    if (request.action === 'new-tab') {
+      const revision=current.mirror?.version;
+      const index=browserIndex(current.mirror,snapshot.windows.find(w=>w.id===request.windowId)?.cursor);
+      if (index === null) return;
+      void contents.executeJavaScript(mirrorLinkTargetSource(index)).then(async (link: {href?: unknown} | null) => {
+        if (!link || !browserLinkUrl(link.href) || session.getWebSession(current.bufferId) !== current || current.mirror?.version !== revision
+          || !session.getSnapshot().windows.some(w => w.id === request.windowId && w.bufferId === current.bufferId && w.tabId === session.getSnapshot().currentTabId)) return;
+        traceBrowser('link.dispatch', {route:'text-command',contents:contents.id,buffer:current.bufferId,url:traceBrowserUrl(link.href)});
+        const opened = await client.request('nvim_exec_lua', ['return require("jusi_web").open_link_tab(...)', [{bufferId:current.bufferId,incarnation:current.incarnation,windowId:request.windowId,tabId:snapshot.currentTabId,url:link.href}]]);
+        traceBrowser('link.result', {route:'text-command',contents:contents.id,opened});
+        if (!opened) return;
+        win.webContents.focus(); win.webContents.send('jusi:leave-web-mode');
+      }).catch((error: unknown)=>profileFeedback({ok:false,message:String(error)}));
+      return;
+    }
+    if (request.action === 'pause' || request.action === 'resume') session.setBrowserAutoRefresh(current.bufferId, request.action === 'resume');
+    if (current.nativeChild) {
+      const ok = nativePopups?.browserAction(current.bufferId,request.action);
+      if (request.action === 'allow-popup') void profileFeedback({ok:!!ok,message:ok?'One popup allowed for 15 seconds. Repeat the page action.':'Popup unavailable.'});
+      return;
+    }
+    if (request.action === 'refresh') win.webContents.send('jusi:browser-refresh',target);
+    if (request.action === 'allow-popup') {
+      const ok=popupControllers.get(contents.id)?.arm(current.privateBrowsing ? 'Private' : `Profile ${current.profile ?? 'default'}`);
+      void profileFeedback({ok:!!ok,message:ok?'One popup allowed for 15 seconds. Repeat the page action.':'Popup unavailable.'});
+    }
+  });
+  ipcMain.handle('jusi:browser-text-status', async (event: unknown, bufferId: number, sessionId: string, guestId: number, status: string) => {
+    assertShell(event);
+    if (!['ready','idle','building','disabled','error','limited'].includes(status)) return;
+    const guest=guests.get(guestId), current=session.getWebSession(bufferId);
+    if (!current || current.sessionId!==sessionId || guest?.bufferId!==bufferId || guest.sessionId!==sessionId) return;
+    traceBrowser('text.status', {contents:guestId,buffer:bufferId,status,transport:'webview'});
+    await session.setBrowserTextStatus(current,status);
+  });
+  win.on("resize", () => invalidateViewport());
+  win.webContents.on("did-start-loading", () => nativeViewport.invalidate());
+  win.webContents.on("render-process-gone", () => nativeViewport.invalidate());
+
+  const assertShell = (event: unknown) => {
+    if (!isTrustedShellSender(event, win.webContents)) throw new Error("Untrusted IPC sender");
+  };
+  ipcMain.handle("jusi:ack-native-popup", (event: unknown, token: string, generation: number) => {
+    assertShell(event);
+    return generation === nativeViewport.generation && !!nativeViewport.viewport
+      && (nativePopups?.acknowledge(token, generation) ?? false);
+  });
+  ipcMain.handle("jusi:retry-native-text", (event: unknown, token: string) => {
+    assertShell(event); return nativePopups?.retryText(token) ?? false;
+  });
+  ipcMain.handle("jusi:close-native-popup", (event: unknown, token: string) => {
+    assertShell(event); return nativePopups?.close(token) ?? false;
+  });
+  ipcMain.handle("jusi:native-viewport", (event: unknown, report: unknown) => {
+    assertShell(event);
+    const [width, height] = win.getContentSize();
+    const accepted = nativeViewport.accept(report, win.webContents.getZoomFactor(), width, height);
+    if (accepted) nativePopups?.place(nativeViewport.viewport, nativeViewport.generation);
+    return accepted;
+  });
+  ipcMain.handle("jusi:invalidate-native-viewport", (event: unknown) => {
+    assertShell(event); invalidateViewport();
+  });
+  ipcMain.handle("jusi:get-initial-state", async (event: unknown) => {
+    assertShell(event);
+    return lastPublishedState ?? { ...toRendererState(session.getPresentationState()), nativeLayoutGeneration: nativeViewport.generation };
+  });
+
+  ipcMain.handle("jusi:read-browser-state", (event: unknown, windowId: number, ticket: DocumentTicket) => {
+    assertShell(event);
+    if (!ticket || !documents.isCurrent(ticket)) return null;
+    return session.getInteractionView(windowId, ticket) ?? null;
+  });
+
+  ipcMain.handle("jusi:mouse", async (event: unknown, input: import("../core/mouse.js").NvimMouseInput) => {
+    assertShell(event);
+    return await session.mouseInput(input);
   });
 
   ipcMain.handle("jusi:input", async (_event: unknown, keys: string) => {
+    assertShell(_event);
     await session.input(keys);
   });
 
   ipcMain.handle("jusi:window-input", async (_event: unknown, keys: string) => {
+    assertShell(_event);
     await session.windowInput(keys);
   });
 
   ipcMain.handle("jusi:resize", async (_event: unknown, columns: number, lines: number) => {
+    assertShell(_event);
     await session.resize(columns, lines);
   });
 
   ipcMain.handle("jusi:command", async (_event: unknown, command: string) => {
+    assertShell(_event);
     await session.command(command);
   });
 
+  ipcMain.handle('jusi:reset-browser-input', (event: unknown, guestId: number) => {
+    assertShell(event);
+    const guest = guests.get(guestId);
+    if (guest && !guest.contents.isDestroyed()) resetBrowserKeys.get(guest.contents)?.();
+  });
+
+  ipcMain.handle("jusi:presentation-mode", async (event: unknown, bufferId: number, sessionId: string, windowId: number, mode: "rich" | "text") => {
+    assertShell(event);
+    if (mode !== "rich" && mode !== "text") return false;
+    const view = session.getAttachedWebViews().find(view => view.bufferId === bufferId && view.sessionId === sessionId && view.windowId === windowId);
+    const current = session.getWebSession(bufferId);
+    if (!view || current?.sessionId !== sessionId || current.incarnation === undefined) return false;
+    return await session.setPresentationMode(bufferId, current.incarnation, windowId, mode);
+  });
+
   ipcMain.handle("jusi:focus-window", async (_event: unknown, windowId: number) => {
+    assertShell(_event);
     await session.command(`call win_gotoid(${Number(windowId)})`);
   });
 
-  ipcMain.handle("jusi:set-cursor", async (_event: unknown, windowId: number, row: number, col: number) => {
-    await session.setCursor(Number(windowId), Number(row), Number(col));
+  ipcMain.handle("jusi:set-cursor", async (_event: unknown, windowId: number, row: number, col: number, ticket: DocumentTicket) => {
+    assertShell(_event);
+    if (!ticket || !Number.isSafeInteger(ticket.revision)) return;
+    const current = session.getWebSession(ticket.bufferId);
+    if (!current || current.sessionId !== ticket.sessionId || current.incarnation !== ticket.incarnation
+      || current.mirror?.version !== ticket.revision || current.attachedWindowId !== windowId) return;
+    await session.setCursor(Number(windowId), Number(row), Number(col), ticket);
   });
 
-  ipcMain.handle("jusi:update-web-mirror", async (_event: unknown, bufferId: number, mirror: unknown) => {
-    await session.updateWebMirror(Number(bufferId), mirror as MirrorDocument);
+  ipcMain.handle("jusi:open-browser-link", async (event: unknown, guestId: number, token: string, bufferId: number, sessionId: string) => {
+    assertShell(event);
+    const selection = linkControllers.get(guestId)?.consume(token);
+    const url = selection?.url;
+    const guest = guests.get(guestId);
+    const current = session.getWebSession(bufferId);
+    if (!selection || !url || selection.target.bufferId !== bufferId || selection.target.sessionId !== sessionId || !guest?.ready || guest.contents.isDestroyed() || !current || current.providerId !== "web"
+      || current.sessionId !== sessionId || current.incarnation === undefined
+      || current.surface.uri.startsWith("jusi-directory:")
+      || (guest.sessionId && guest.sessionId !== sessionId)
+      || guest.contents.session !== electronSession.fromPartition(browserPartition(current.surface.uri,
+        bufferId, current.profile, current.sessionId, current.privateBrowsing))) return false;
+    try {
+      traceBrowser('link.dispatch', {route:'context-menu',contents:guestId,buffer:bufferId,url:traceBrowserUrl(url)});
+      const opened = await client.request("nvim_exec_lua", [
+        'local request = ...; return require("jusi_web").open_link_tab(request)',
+        [{ ...selection.target, url }],
+      ]);
+      traceBrowser('link.result', {route:'context-menu',contents:guestId,opened});
+      if (!opened) throw new Error("Source presentation changed");
+      win.focus();
+      win.webContents.send("jusi:leave-web-mode");
+      return true;
+    } catch (error) {
+      void profileFeedback({ ok: false, message: `Could not open link: ${String(error)}` });
+      return false;
+    }
+  });
+
+  ipcMain.handle("jusi:arm-popup", (event: unknown, bufferId: number, sessionId: string, guestId: number) => {
+    assertShell(event);
+    const current = session.getWebSession(bufferId);
+    const guest = guests.get(guestId);
+    if (!current || current.providerId !== "web" || current.sessionId !== sessionId || !guest?.ready || guest.contents.isDestroyed()
+      || current.surface.uri.startsWith("jusi-directory:")) return false;
+    const expected = electronSession.fromPartition(browserPartition(current.surface.uri, bufferId,
+      current.profile, current.sessionId, current.privateBrowsing));
+    if (guest.contents.session !== expected) return false;
+    if (guest.sessionId && guest.sessionId !== sessionId) return false;
+    const armed = popupControllers.get(guestId)?.arm(current.privateBrowsing ? "Private" : `Profile ${current.profile ?? "default"}`) ?? false;
+    if (armed) void profileFeedback({ ok: true, message: "One native popup allowed for 15 seconds. Repeat the page action." });
+    return armed;
+  });
+  ipcMain.handle("jusi:invalidate-document", async (event: unknown, bufferId: number, sessionId: string, guestId: number) => {
+    assertShell(event);
+    const guest = guests.get(guestId);
+    const current = session.getWebSession(bufferId);
+    if (!guest?.ready || guest.contents.isDestroyed() || guest.sessionId !== sessionId || guest.bufferId !== bufferId
+      || current?.sessionId !== sessionId || current.incarnation === undefined
+      || current.textSource === "worker" || current.textLayer === "off") return false;
+    return !!await documents.advance({ bufferId, sessionId, incarnation: current.incarnation });
+  });
+
+  ipcMain.handle("jusi:acquire-document", async (event: unknown, bufferId: number, sessionId: string, guestId: number) => {
+    assertShell(event);
+    const guest = guests.get(guestId);
+    const current = session.getWebSession(bufferId);
+    if (!guest || !guest.ready || guest.contents.isDestroyed() || current?.sessionId !== sessionId
+      || current.incarnation === undefined) return null;
+    if (guest.sessionId && guest.sessionId !== sessionId) return null;
+    if ([...guests.values()].some(other => other !== guest && other.sessionId === sessionId)) return null;
+    if (!guest.sessionId) {
+      guest.sessionId = sessionId;
+      guest.bufferId = bufferId;
+      void session.setBrowserLocation({bufferId, sessionId, incarnation: current.incarnation}, guest.contents.getURL())
+        .catch(error => console.error('[browser-location]', error));
+      return documents.advance({ bufferId, sessionId, incarnation: current.incarnation });
+    }
+    return documents.current(sessionId);
+  });
+
+  ipcMain.handle("jusi:build-worker-text", async (event: unknown, ticket: DocumentTicket) => {
+    assertShell(event);
+    if (!ticket || !documents.isCurrent(ticket) || session.getWebSession(ticket.bufferId)?.textLayer === "off") return false;
+    const guest = [...guests.values()].find(value => value.sessionId === ticket.sessionId);
+    if (!guest || guest.contents.isDestroyed() || guest.contents.getURL() !== session.getWebSession(ticket.bufferId)?.url) {
+      throw new Error("Worker source does not match the displayed page");
+    }
+    const document = await session.extractWorkerText(ticket);
+    if (!documents.isCurrent(ticket)) return false;
+    const accepted = await documents.commit(ticket, () => session.writeWorkerText(ticket, document));
+    if (accepted) session.publishWorkerText(ticket, document);
+    return accepted;
+  });
+
+  ipcMain.handle("jusi:update-web-mirror", async (event: unknown, ticket: DocumentTicket, mirror: MirrorDocument) => {
+    assertShell(event);
+    if (!ticket || !documents.isCurrent(ticket) || session.getWebSession(ticket.bufferId)?.textSource === "worker") return false;
+    const accepted = await documents.commit(ticket, () => session.writeWebMirror(ticket, mirror));
+    if (accepted) session.publishWebMirror(ticket, mirror);
+    return accepted;
   });
 
   ipcMain.on("jusi:perf", (_event: unknown, event: unknown) => {
+    if (!isTrustedShellSender(_event, win.webContents)) return;
     if (!shouldLogPerf() || typeof event !== "object" || event === null) {
       return;
     }
@@ -1068,13 +1006,28 @@ async function createWindow(): Promise<void> {
 
   win.on("closed", async () => {
     ipcMain.removeHandler("jusi:get-initial-state");
+    ipcMain.removeHandler("jusi:read-browser-state");
+    ipcMain.removeHandler("jusi:native-viewport");
+    ipcMain.removeHandler("jusi:ack-native-popup");
+    ipcMain.removeHandler("jusi:close-native-popup");
+    ipcMain.removeHandler("jusi:retry-native-text");
+    ipcMain.removeHandler("jusi:invalidate-native-viewport");
+    ipcMain.removeHandler("jusi:mouse");
     ipcMain.removeHandler("jusi:input");
     ipcMain.removeHandler("jusi:window-input");
     ipcMain.removeHandler("jusi:resize");
     ipcMain.removeHandler("jusi:command");
     ipcMain.removeHandler("jusi:focus-window");
+    ipcMain.removeHandler("jusi:presentation-mode");
+    ipcMain.removeHandler("jusi:reset-browser-input");
     ipcMain.removeHandler("jusi:set-cursor");
+    ipcMain.removeHandler("jusi:browser-text-status");
     ipcMain.removeHandler("jusi:update-web-mirror");
+    ipcMain.removeHandler("jusi:build-worker-text");
+    ipcMain.removeHandler("jusi:acquire-document");
+    ipcMain.removeHandler("jusi:invalidate-document");
+    ipcMain.removeHandler("jusi:open-browser-link");
+    ipcMain.removeHandler("jusi:arm-popup");
     ipcMain.removeAllListeners("jusi:perf");
     if (!neovimExited) {
       await session.dispose();
@@ -1099,10 +1052,6 @@ async function createWindow(): Promise<void> {
 
 app.whenReady().then(async () => {
   try {
-    await registerDirectoryProtocol();
-    app.on("web-contents-created", (_event, contents) => {
-      void registerDirectoryProtocol(contents.session.protocol as ProtocolRegistry);
-    });
     await createWindow();
   } catch (error) {
     console.error("[create-window-failed]", error);
