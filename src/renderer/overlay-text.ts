@@ -40,20 +40,19 @@ export function wrapHighlighted(chunks: HighlightChunk[], maxWidth: number,
   return lines;
 }
 
-/** Pixel offset in the rendered styled text, using UTF-16 only after protocol decoding. */
-export function renderedTextOffset(element: HTMLElement, index: number): number {
+/** Locate the glyph after a decoded UTF-16 offset, including at a soft wrap. */
+export function renderedGlyphRect(element: HTMLElement, index: number, length: number, end: HTMLElement): DOMRect {
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-  let node: Node | null, remaining = index;
-  const range = document.createRange();
-  range.setStart(element, 0);
-  while ((node = walker.nextNode())) {
-    const length = node.textContent?.length ?? 0;
-    if (remaining <= length) {
-      range.setEnd(node, remaining);
-      return range.getBoundingClientRect().width;
+  let remaining = index;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const size = node.textContent?.length ?? 0;
+    if (remaining < size) {
+      const range = document.createRange();
+      range.setStart(node, remaining);
+      range.setEnd(node, Math.min(size, remaining + length));
+      return range.getBoundingClientRect();
     }
-    remaining -= length;
+    remaining -= size;
   }
-  range.selectNodeContents(element);
-  return range.getBoundingClientRect().width;
+  return end.getBoundingClientRect();
 }

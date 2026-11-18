@@ -62,6 +62,9 @@ function testTracksMessagesAndHistoryAppend() {
   overlays.handleRedraw([
     ["msg_show", ["echo", [[0, "hello", 0]], false, true, false, "m1", ""]],
     ["msg_show", ["echo", [[0, " world", 0]], false, true, true, "m1", ""]],
+  ]);
+  assert.equal(overlays.getMessages().entries[0].text, "hello world");
+  overlays.handleRedraw([
     ["msg_showcmd", [[[0, "3/9", 0]]]],
     ["msg_ruler", [[[0, "12,4", 0]]]],
     ["msg_showmode", [[[0, "-- INSERT --", 0]]]],
@@ -74,7 +77,7 @@ function testTracksMessagesAndHistoryAppend() {
 
   assert.deepEqual(withoutRevisions(overlays.getMessages()), {
     version: 3,
-    entries: [{ kind: "echo", text: "hello world", id: "m1" }],
+    entries: [],
     showmode: "-- INSERT --",
     showcmd: "3/9",
     ruler: "12,4",

@@ -80,6 +80,13 @@
         z-index: 0;
       }
 
+      #editor-layers {
+        position: absolute;
+        inset: 0;
+        isolation: isolate;
+        pointer-events: none;
+      }
+
       #grid-layer-root {
         pointer-events: none;
         position: absolute;
@@ -158,8 +165,15 @@
         overflow: hidden;
         opacity: 0;
         pointer-events: none;
-        white-space: pre;
         z-index: 4000;
+        white-space: break-spaces;
+        overflow-wrap: anywhere;
+        word-break: break-all;
+      }
+
+      .cmdline-end {
+        display: inline-block;
+        height: 1px;
       }
 
       .cmdline-layer--visible {
@@ -209,7 +223,7 @@
 
       #popupmenu-layer {
         position: absolute;
-        min-width: 160px;
+        min-width: min(160px, var(--popup-available-width, 100%));
         max-width: 360px;
         background: rgba(12, 14, 19, 0.96);
         border: 1px solid rgba(255, 255, 255, 0.08);
@@ -526,10 +540,12 @@
     <div class="shell">
       <div class="stage">
         <pre id="terminal-screen"></pre>
-        <div id="grid-layer-root"></div>
-        <div id="terminal-cursor"></div>
-        <div id="window-frame-layer"></div>
-        <div id="web-view-layer"></div>
+        <div id="editor-layers">
+          <div id="grid-layer-root"></div>
+          <div id="terminal-cursor"></div>
+          <div id="window-frame-layer"></div>
+          <div id="web-view-layer"></div>
+        </div>
         <div id="message-layer"></div>
         <div id="message-status-layer">
           <div data-role="showmode"></div>

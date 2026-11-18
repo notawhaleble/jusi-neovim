@@ -10,6 +10,13 @@ export async function nvimIntegrationCases({win, command, waitFor}) {
   };
   const block = () => js(`document.querySelector('#cmdline-block-layer')?.textContent ?? ''`);
   const rendered = () => js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  await waitFor(() => js(`!!document.querySelector('.grid-layer[data-window-id]')`));
+  await js(`window.jusi.sendInput(":echo 'lalala'<CR>")`);
+  await waitFor(() => js(`document.querySelector('#message-layer').textContent === 'lalala'`));
+  await js(`window.jusi.sendInput('i')`);
+  await waitFor(() => js(`document.querySelector('.message-status-layer--visible [data-role="showmode"]')?.textContent.includes('INSERT')`));
+  await press('Escape');
+  await waitFor(() => js(`!document.querySelector('#message-layer').textContent.includes('lalala')`));
   const signal = join(process.env.JUSI_TEST_PROFILE_ROOT, 'stream-continue');
   const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
   const lines = Array.from({length:120}, (_,i) => `stream-line-${i+1}`).join('\\n') + '\\n';
@@ -19,6 +26,7 @@ export async function nvimIntegrationCases({win, command, waitFor}) {
     await waitFor(async () => (await js('window.jusi.getInitialState()')).messages.entries.some(e=>e.kind==='shell_out' && e.text.includes('stream-line-120')));
     await rendered();
     writeFileSync('.local/review/nvim-message-tail.png', (await win.webContents.capturePage()).toPNG());
+    assert.equal(await js(`document.querySelector('#message-layer').textContent.includes('Press ENTER')`), false, 'busy output has no acknowledgement prompt');
     await press('Up');
     await waitFor(async () => !(await block()).includes('stream-line-120'));
     const scrolled = await block();

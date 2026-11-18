@@ -34,3 +34,18 @@ const position = { name: 'win_float_pos', args: [5, 11, 'NW', 1, 4, 9, true, 50,
 assert.equal(translator.translate([position])[0].bounds.width, 64);
 translator.translate([{ name: 'grid_destroy', args: [5] }]);
 assert.equal(translator.translate([position])[0].bounds.width, 0);
+
+// Eight-field float events on 0.11.4 refer to the anchor grid's corner.
+const split = { name: 'win_pos', args: [4, 12, 2, 40, 39, 20] };
+const float = { name: 'win_float_pos', args: [5, 11, 'SE', 4, 6.8, 10.5, true, 50, 0] };
+const nested = { name: 'win_float_pos', args: [6, 13, 'NW', 5, 1, 2, true, 60, 0] };
+const coords = events => events.filter(e => e.type === 'grid-bounds').map(({ bounds: b }) => [b.gridId, b.row, b.col]);
+const anchored = new NvimRedrawTranslator();
+assert.deepEqual(anchored.translate([{ name: 'grid_resize', args: [5,10,5] }, float]), []);
+assert.deepEqual(coords(anchored.translate([split])), [[5,3,40],[4,2,40]]);
+assert.deepEqual(coords(anchored.translate([{ name: 'grid_resize', args: [6,8,2] },nested])), [[6,4,42]]);
+assert.deepEqual(coords(anchored.translate([{ ...split, args: [4,12,3,30,49,20] }])), [[5,4,30],[4,3,30],[6,5,32]]);
+assert.deepEqual(anchored.translate([{ name: 'win_hide', args:[4] }]).map(e=>e.gridId), [4,5,6]);
+assert.deepEqual(coords(anchored.translate([split])), [[5,3,40],[6,4,42],[4,2,40]]);
+anchored.translate([{ name: 'grid_destroy', args: [4] }]);
+assert.deepEqual(coords(anchored.translate([split])), [[4,2,40]], 'reused split grid cannot revive old floats');

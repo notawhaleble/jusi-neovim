@@ -120,10 +120,7 @@ function testGridPopupAnchorsAboveCompletionRowWhenTopHasMoreSpace() {
           tabId: 1,
           bufferId: 1,
           gridId: 3,
-          row: 2,
-          col: 5,
-          width: 40,
-          height: 12,
+          gridBounds: { gridId: 3, row: 2, col: 5, width: 40, height: 12 },
         },
       ],
       buffers: [],
@@ -160,10 +157,7 @@ function testGridPopupAnchorsBelowCompletionRowWhenBottomHasMoreSpace() {
           tabId: 1,
           bufferId: 1,
           gridId: 3,
-          row: 2,
-          col: 5,
-          width: 40,
-          height: 12,
+          gridBounds: { gridId: 3, row: 2, col: 5, width: 40, height: 12 },
         },
       ],
       buffers: [],
@@ -200,10 +194,7 @@ function testGridPopupAboveDoesNotCrossWindowTop() {
           tabId: 1,
           bufferId: 1,
           gridId: 3,
-          row: 2,
-          col: 5,
-          width: 40,
-          height: 4,
+          gridBounds: { gridId: 3, row: 2, col: 5, width: 40, height: 4 },
         },
       ],
       buffers: [],
@@ -240,10 +231,7 @@ function testGridPopupBelowDoesNotOverlapCommandArea() {
           tabId: 1,
           bufferId: 1,
           gridId: 3,
-          row: 0,
-          col: 0,
-          width: 80,
-          height: 40,
+          gridBounds: { gridId: 3, row: 0, col: 0, width: 80, height: 40 },
         },
       ],
       buffers: [],
@@ -271,3 +259,17 @@ testGridPopupAboveDoesNotCrossWindowTop();
 testGridPopupBelowDoesNotOverlapCommandArea();
 
 console.log("compositor tests passed");
+
+const floatMenu = {
+  popupmenu: { visible: true, items: [], row: 1, col: 5, grid: 7 },
+  stage: { width: 100, height: 90, cellWidth: 10, cellHeight: 10 },
+  commandAreaHeight: 10, popupHeight: 70, popupWidth: 140,
+};
+const owner = { id: 2, tabId: 1, gridId: 7, row: 0, col: 0,
+  gridBounds: { gridId: 7, row: 3, col: 4, width: 12, height: 7 } };
+const place = windows => placePopupmenu({ ...floatMenu, snapshot: { currentTabId: 1, windows } });
+assert.deepEqual(place([owner]), { left: 0, top: 50, maxWidth: 100, maxHeight: 30 });
+for (const windows of [[], [{ ...owner, tabId: 2 }], [{ ...owner, gridBounds: undefined }],
+  [{ ...owner, gridBounds: { ...owner.gridBounds, col: 8 } }]]) {
+  assert.deepEqual(place(windows), { left: 0, top: 0, maxWidth: 0, maxHeight: 0 });
+}

@@ -33,7 +33,8 @@ toggles in text/rich modes. Keep intermittent real-site link routing and native
 fullscreen re-entry findings open unless reproduced and explained.
 
 
-User direction on 2026-10-16 supersedes the immediate Neovim C4 next step:
+Historical sequencing from 2026-10-16 (the bounded editor pass resumed on
+2026-11-18):
 1. Address the five observed issues in [WEB-BUFFER-ISSUES.md](WEB-BUFFER-ISSUES.md).
    Updated 2026-10-17: after W1/W3, prioritize W5 app-switch input recovery,
    then W4 fullscreen, and investigate W2 last (user no longer reproduces it).
@@ -47,8 +48,8 @@ User direction on 2026-10-16 supersedes the immediate Neovim C4 next step:
 
 Neovim is usable for the user's everyday work; remaining conformance gaps are
 explicitly deferred, not closed. The earlier stale unrelated-message pager defect
-has a scoped regression fix; the 2026-10-30 report of Fugitive output replay and
-lost line breaks remains open (STATUS), as does actual Fugitive push delay.
+has a scoped regression fix; the paused Fugitive push and subsequent pull now have local macOS
+renderer evidence (2026-11-18 STATUS). Network push latency is a separate issue.
 Existing alpha/release gates below remain valid but do not override this work order.
 
 ## Current delivery target — local alpha

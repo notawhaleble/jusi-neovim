@@ -714,7 +714,7 @@ async function createWindow(): Promise<void> {
   app.on("web-contents-created", webContentsCreatedHandler);
   if (shouldRunStartupDemo()) {
     const startupCommands = [
-      "set laststatus=2 noshowmode noruler",
+      "set laststatus=2 noruler",
       "enew",
       "setlocal buftype=nofile bufhidden=hide noswapfile",
       "call setline(1, ['jusi-neovim', '', 'Left split is a normal Neovim buffer.', 'Right split is a web buffer.', '', 'Keys currently go to Neovim.', 'Resize the window to see grid + web bounds stay in sync.'])",

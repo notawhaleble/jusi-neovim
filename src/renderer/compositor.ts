@@ -91,23 +91,16 @@ export function placePopupmenu(args: {
     const anchorWindow = snapshot.windows.find((window) => {
       return window.tabId === snapshot.currentTabId && window.gridId === popupmenu.grid;
     });
-    if (!anchorWindow) return { left: 0, top: 0, maxWidth: 0, maxHeight: 0 };
-    if (anchorWindow && typeof anchorWindow.row === "number" && typeof anchorWindow.col === "number") {
-      const lineTop = (anchorWindow.row + popupmenu.row) * stage.cellHeight;
-      const lineBottom = lineTop + stage.cellHeight;
-      const minTop = anchorWindow.row * stage.cellHeight;
-      const windowBottom = typeof anchorWindow.height === "number"
-        ? (anchorWindow.row + anchorWindow.height) * stage.cellHeight
-        : stage.height;
-      const maxBottom = Math.min(windowBottom, commandBoundaryTop);
-      return boundedPlacement(
-        (anchorWindow.col + popupmenu.col) * stage.cellWidth,
-        lineTop,
-        lineBottom,
-        minTop,
-        maxBottom,
-      );
-    }
+    const grid = anchorWindow?.gridBounds;
+    if (!grid || grid.gridId !== popupmenu.grid || popupmenu.row < 0 || popupmenu.row >= grid.height ||
+        popupmenu.col < 0 || popupmenu.col >= grid.width) return { left: 0, top: 0, maxWidth: 0, maxHeight: 0 };
+    const lineTop = (grid.row + popupmenu.row) * stage.cellHeight;
+    const left = (grid.col + popupmenu.col) * stage.cellWidth;
+    if (lineTop < 0 || lineTop >= commandBoundaryTop || left < 0 || left >= stage.width)
+      return { left: 0, top: 0, maxWidth: 0, maxHeight: 0 };
+    return boundedPlacement(left, lineTop, lineTop + stage.cellHeight,
+      Math.max(0, grid.row * stage.cellHeight),
+      Math.min((grid.row + grid.height) * stage.cellHeight, commandBoundaryTop));
   }
 
   const lineTop = popupmenu.row * stage.cellHeight;

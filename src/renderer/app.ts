@@ -1,7 +1,7 @@
 import { cursorCell, cursorHighlight, hideCursor, updateCursorBlink, restartCursorBlink } from "./cursor.js";
 import { styleForHighlight } from "./highlight.js";
 import { byteOffsetToIndex, chunksText } from "../core/ui-text.js";
-import { commandText, renderedTextOffset, wrapHighlighted } from "./overlay-text.js";
+import { commandText, renderedGlyphRect, wrapHighlighted } from "./overlay-text.js";
 import { installGridMouse } from "./mouse.js";
 import { BrowserRegionNavigator, browserInteraction, sameBrowserTarget, type BrowserActionTarget, type BrowserInteractionPort } from "../backends/web/interaction.js";
 import { presentationBackends } from "../backends/index.js";
@@ -49,8 +49,6 @@ let pendingWindowCommandTimer: ReturnType<typeof setTimeout> | null = null;
 let pointerHidden = false;
 let terminalFontSize = 14;
 let requestGridResize: () => void = () => {};
-let messagePagerSignature: string | null = null;
-let messagePagerDismissedRevision = -1;
 let messagePagerLineCount = 0;
 let messagePagerScroll = 0;
 
@@ -535,7 +533,7 @@ function entryChunks(entry: RendererSessionState['messages']['entries'][number])
 }
 
 function hasInteractiveMessage(state: RendererSessionState): boolean {
-  return pendingMessageEntries(state).some(entry => ['confirm', 'confirm_sub', 'number_prompt'].includes(entry.kind));
+  return state.messages.entries.some(entry => ['confirm', 'confirm_sub', 'number_prompt'].includes(entry.kind));
 }
 
 function getCommandAreaHeight(state: RendererSessionState): number {
@@ -561,71 +559,30 @@ function commandBlockLines(state: RendererSessionState): HighlightChunk[][] {
   return lines;
 }
 
-function pendingMessageEntries(state: RendererSessionState) {
-  return state.messages.entries.filter(entry => (entry.revision ?? 0) > messagePagerDismissedRevision);
-}
-
 function commandMessageBlockLines(state: RendererSessionState): HighlightChunk[][] {
   const lines: HighlightChunk[][] = [];
-  const hasReturnPrompt = hasReturnPromptMessage(state);
-  if (hasReturnPrompt) {
-    lines.push(...pendingMessageEntries(state)
-      .filter((entry) => entry.text !== "" && !isReturnPromptMessage(entry))
-      .flatMap((entry) => messageBlockLines(entry, state.screen.cols)));
-  } else {
-    lines.push(...pendingMessageEntries(state)
-      .filter((entry) => isCommandBlockMessageEntry(entry, state.screen.cols))
-      .flatMap((entry) => messageBlockLines(entry, state.screen.cols)));
+  const entries = state.messages.entries.filter(entry => entry.text && !isReturnPromptMessage(entry));
+  if (entries.length > 1 || hasReturnPromptMessage(state) || entries.some(entry => isCommandBlockMessageEntry(entry, state.screen.cols))) {
+    lines.push(...entries.flatMap(entry => messageBlockLines(entry, state.screen.cols)));
   }
   if (state.messages.historyVisible) {
-    lines.push(...state.messages.history.filter(entry => (entry.revision ?? 0) > messagePagerDismissedRevision).flatMap((entry) => wrapOverlayChunks(entryChunks(entry), state.screen.cols)));
+    lines.push(...state.messages.history.flatMap((entry) => wrapOverlayChunks(entryChunks(entry), state.screen.cols)));
   }
   return lines;
 }
 
-function commandMessageSignature(state: RendererSessionState): string | null {
-  const lines = commandMessageBlockLines(state);
-  if (lines.length === 0) {
-    return null;
-  }
-  return [
-    ...pendingMessageEntries(state).map(entry => entry.revision ?? 0),
-    hasReturnPromptMessage(state) ? "native-prompt" : "synthetic-prompt",
-    lines.map(chunksText).join("\n"),
-  ].join("\u001f");
-}
-
 function syncMessagePagerState(state: RendererSessionState): void {
-  const signature = commandMessageSignature(state);
-  if (signature !== messagePagerSignature) {
-    messagePagerSignature = signature;
-    const lineCount = commandMessageBlockLines(state).length;
-    const maxRows = Math.max(1, state.screen.rows);
-    const followedTail = messagePagerScroll >= Math.max(0, messagePagerLineCount - maxRows);
-    if (messagePagerLineCount === 0 || followedTail) {
-      messagePagerScroll = Math.max(0, lineCount - maxRows);
-    }
-    messagePagerLineCount = lineCount;
-  }
-  clampMessagePagerScroll(state);
-}
-
-function clampMessagePagerScroll(state: RendererSessionState): void {
+  const lineCount = commandMessageBlockLines(state).length;
   const maxRows = Math.max(1, state.screen.rows);
-  const maxScroll = Math.max(0, commandMessageBlockLines(state).length - maxRows);
+  if (messagePagerScroll >= Math.max(0, messagePagerLineCount - maxRows)) {
+    messagePagerScroll = Math.max(0, lineCount - maxRows);
+  }
+  messagePagerLineCount = lineCount;
+  const maxScroll = Math.max(0, lineCount - maxRows);
   messagePagerScroll = Math.max(0, Math.min(messagePagerScroll, maxScroll));
 }
 
-function isCommandMessageDismissed(state: RendererSessionState): boolean {
-  const signature = commandMessageSignature(state);
-  return signature === null && messagePagerDismissedRevision >= 0 && pendingMessageEntries(state).length === 0;
-}
-
 function visibleCommandMessageBlockLines(state: RendererSessionState): HighlightChunk[][] {
-  const signature = commandMessageSignature(state);
-  if (signature === null) {
-    return [];
-  }
   const lines = commandMessageBlockLines(state);
   const maxRows = Math.max(0, state.screen.rows);
   if (lines.length <= maxRows) {
@@ -634,49 +591,15 @@ function visibleCommandMessageBlockLines(state: RendererSessionState): Highlight
   return lines.slice(messagePagerScroll, messagePagerScroll + maxRows);
 }
 
-function commandMessagePrompt(state: RendererSessionState): string | null {
-  if (state.cmdline.visible || hasInteractiveMessage(state)) return null;
-  const signature = commandMessageSignature(state);
-  if (signature === null || isCommandMessageDismissed(state)) {
-    return null;
-  }
-
-  const returnPromptEntry = pendingMessageEntries(state).find(isReturnPromptMessage);
-  if (returnPromptEntry) {
-    return returnPromptEntry.text || hitEnterPromptText;
-  }
-
-  const lines = commandMessageBlockLines(state);
-  const maxRows = Math.max(1, state.screen.rows);
-  if (lines.length > maxRows && messagePagerScroll + maxRows < lines.length) {
-    return "-- More --";
-  }
-  return hitEnterPromptText;
-}
-
 function visibleMessageEntries(state: RendererSessionState): RendererSessionState["messages"]["entries"] {
-  const prompt = commandMessagePrompt(state);
-  if (prompt) {
-    return [{
-      kind: "return_prompt",
-      text: prompt,
-      id: null,
-    }];
-  }
-  if (isCommandMessageDismissed(state)) {
-    return [];
-  }
-
-  const entriesWithText = pendingMessageEntries(state).filter((entry) => entry.text !== "");
-  const returnPromptEntry = entriesWithText.find(isReturnPromptMessage);
-  if (returnPromptEntry) {
-    return [returnPromptEntry];
-  }
-  return entriesWithText.filter((entry) => !isCommandBlockMessageEntry(entry, state.screen.cols)).slice(-1);
+  const entriesWithText = state.messages.entries.filter(entry => entry.text !== "");
+  const prompt = state.messages.entries.find(isReturnPromptMessage);
+  if (prompt) return [prompt.text ? prompt : { ...prompt, text: hitEnterPromptText, chunks: undefined }];
+  return commandMessageBlockLines(state).length ? [] : entriesWithText.slice(-1);
 }
 
 function hasReturnPromptMessage(state: RendererSessionState): boolean {
-  return pendingMessageEntries(state).some(isReturnPromptMessage);
+  return state.messages.entries.some(isReturnPromptMessage);
 }
 
 function isReturnPromptMessage(entry: RendererSessionState["messages"]["entries"][number]): boolean {
@@ -695,7 +618,7 @@ function isCommandBlockMessageEntry(
 }
 
 function messageBlockLines(entry: RendererSessionState["messages"]["entries"][number], maxColumns: number): HighlightChunk[][] {
-  const lines = wrapOverlayChunks(entryChunks(entry), maxColumns);
+  const lines = [...wrapOverlayChunks(entryChunks(entry), maxColumns)];
   while (lines.length > 0 && chunksText(lines[0]) === "") {
     lines.shift();
   }
@@ -1488,16 +1411,17 @@ function renderMessageLayers(state: RendererSessionState): void {
   }
 }
 
-function renderCmdlineBlock(state: RendererSessionState): void {
+function renderCmdlineBlock(state: RendererSessionState, commandTop: number): void {
   const block = document.getElementById("cmdline-block-layer");
   if (!block) {
     return;
   }
 
   const blockElement = block as HTMLElement;
-  const lines = visibleCmdlineBlockLines(state);
+  const allLines = visibleCmdlineBlockLines(state);
+  const lines = allLines.slice(Math.max(0, allLines.length - Math.floor(commandTop / cellHeight)));
   const blockHeight = lines.length * cellHeight;
-  blockElement.style.top = `${Math.max(0, terminalGridHeight(state) - blockHeight)}px`;
+  blockElement.style.top = `${Math.max(0, commandTop - blockHeight)}px`;
   blockElement.style.bottom = "auto";
   blockElement.style.height = `${blockHeight}px`;
   blockElement.style.maxHeight = `${Math.max(0, state.screen.rows * cellHeight)}px`;
@@ -1592,6 +1516,7 @@ function renderState(state: RendererSessionState): void {
       const bounds = resolveWindowGridBounds(activeWindow);
       const row = bounds?.row ?? activeWindow.row!;
       const col = bounds?.col ?? activeWindow.col!;
+      cursor.style.zIndex = String(11 + windowOrder(activeWindow));
       const cursorStyle = state.screen.mode.cursor;
       const grid = state.grids.find(grid => grid.gridId === activeGridCursor.gridId) ?? state.screen;
       const cell = cursorCell(grid.runs[activeGridCursor.row] ?? [], activeGridCursor.col);
@@ -1622,6 +1547,7 @@ function renderState(state: RendererSessionState): void {
   }
 
   let commandPopupLeft: number | undefined;
+  let commandTop = terminalGridHeight(state);
   const cmdline = document.getElementById("cmdline-layer");
   if (cmdline) {
     const cmdlineElement = cmdline as HTMLElement;
@@ -1637,28 +1563,42 @@ function renderState(state: RendererSessionState): void {
       content.className = 'cmdline-content';
       renderOverlayChunks(content, view.chunks, state);
       const commandCursor = cmdline.querySelector<HTMLElement>(".cmdline-cursor") ?? document.createElement("span");
-      cmdline.replaceChildren(content);
-      const cursorLeft = renderedTextOffset(content, view.cursorIndex);
-      const scroll = Math.max(0, cursorLeft + cellWidth - cmdlineElement.clientWidth);
-      content.style.display = 'inline-block';
-      content.style.transform = `translateX(${-scroll}px)`;
-      if (state.popupmenu.grid === -1) {
-        commandPopupLeft = renderedTextOffset(content, view.prefixLength
-          + byteOffsetToIndex(state.cmdline.content, state.popupmenu.col)) - scroll;
-      }
+      const flow = document.createElement('div');
+      const end = document.createElement('span');
+      end.className = 'cmdline-end';
+      end.style.width = `${cellWidth}px`;
+      flow.append(content, end);
+      cmdline.replaceChildren(flow);
+      cmdline.scrollTop = 0;
+      const height = Math.min(flow.offsetHeight, commandTop + cellHeight);
+      commandTop -= Math.max(0, height - cellHeight);
+      cmdlineElement.style.height = `${height}px`;
+      cmdlineElement.style.top = `${commandTop}px`;
+      const origin = flow.getBoundingClientRect();
       const text = chunksText(view.chunks);
       const glyph = new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(text.slice(view.cursorIndex))[Symbol.iterator]().next().value?.segment ?? ' ';
+      const caret = renderedGlyphRect(content, view.cursorIndex, glyph.length, end);
+      const cursorTop = Math.floor((caret.top + caret.height / 2 - origin.top) / cellHeight) * cellHeight;
+      cmdline.scrollTop = Math.max(0, cursorTop + cellHeight - height);
+      if (state.popupmenu.grid === -1) {
+        const anchor = view.prefixLength + byteOffsetToIndex(state.cmdline.content, state.popupmenu.col);
+        const anchorRect = renderedGlyphRect(content, anchor, 1, end);
+        const viewport = cmdlineElement.getBoundingClientRect();
+        if (anchorRect.bottom > viewport.top && anchorRect.top < viewport.bottom) {
+          commandPopupLeft = anchorRect.left - origin.left;
+        }
+      }
       let index = 0;
       const chunk = view.chunks.find(chunk => { index += chunk.text.length; return index > view.cursorIndex; });
       const attrs = chunk?.attrs ?? state.screen.highlights[chunk?.highlightId ?? 0];
-      const glyphWidth = Math.max(cellWidth, renderedTextOffset(content, view.cursorIndex + glyph.length) - cursorLeft);
+      const glyphWidth = Math.max(cellWidth, caret.width);
       commandCursor.className = "cmdline-cursor";
       const cursorStyle = state.screen.mode.cursor;
       applyCursorStyle(
         commandCursor,
         cursorStyle,
-        cursorLeft - scroll,
-        0,
+        caret.left - origin.left,
+        cursorTop,
         cursorHighlight(cursorStyle, attrs, state.screen.highlights, { foreground, background }),
         {text: glyph, width: glyphWidth, offset: 0},
         JSON.stringify([state.cmdline.level, view.cursorIndex, text, state.screen.mode.name]),
@@ -1674,7 +1614,7 @@ function renderState(state: RendererSessionState): void {
     }
   }
 
-  renderCmdlineBlock(state);
+  renderCmdlineBlock(state, commandTop);
 
   const popup = document.getElementById("popupmenu-layer");
   if (popup) {
@@ -1684,7 +1624,8 @@ function renderState(state: RendererSessionState): void {
       const stageHeight = stage instanceof HTMLElement ? stage.clientHeight : 0;
       const stageWidth = stage instanceof HTMLElement ? stage.clientWidth : 0;
       const commandHeight = getCommandAreaHeight(state);
-      const commandAreaTop = terminalGridHeight(state) - (visibleCmdlineBlockLines(state).length * cellHeight);
+      const commandAreaTop = commandTop - (visibleCmdlineBlockLines(state).length * cellHeight);
+      popup.style.removeProperty("--popup-available-width");
       popup.style.maxHeight = "";
       popup.style.maxWidth = "";
       popup.classList.add("popupmenu-layer--visible");
@@ -1717,7 +1658,10 @@ function renderState(state: RendererSessionState): void {
       popup.style.top = `${placement.top}px`;
       popup.style.maxHeight = placement.maxHeight === undefined ? "" : `${placement.maxHeight}px`;
       popup.style.maxWidth = placement.maxWidth === undefined ? "" : `${placement.maxWidth}px`;
-      popup.querySelector(".popupmenu-item--selected")?.scrollIntoView({ block: "nearest" });
+      popup.style.setProperty("--popup-available-width", popup.style.maxWidth);
+      const visible = Boolean(placement.maxHeight && placement.maxWidth);
+      popup.classList.toggle("popupmenu-layer--visible", visible);
+      if (visible) popup.querySelector(".popupmenu-item--selected")?.scrollIntoView({ block: "nearest" });
     } else {
       popup.classList.remove("popupmenu-layer--visible");
       popup.style.maxHeight = "";
@@ -1910,32 +1854,6 @@ function encodeKey(event: KeyboardEvent): string | null {
   return encodeLiteralKey(event.key);
 }
 
-function dismissCommandMessagePager(): void {
-  if (!latestState) {
-    return;
-  }
-  const signature = commandMessageSignature(latestState);
-  if (!signature) {
-    return;
-  }
-  messagePagerDismissedRevision = latestState.messages.version;
-  messagePagerLineCount = 0;
-  messagePagerScroll = 0;
-  scheduleRenderState(latestState);
-}
-
-async function dismissCommandMessagePagerWithInput(event: KeyboardEvent): Promise<void> {
-  const shouldForward = latestState ? hasReturnPromptMessage(latestState) : false;
-  dismissCommandMessagePager();
-  if (!shouldForward) {
-    return;
-  }
-  const encoded = encodeKey(event);
-  if (encoded) {
-    await window.jusi.sendInput(encoded);
-  }
-}
-
 function scrollCommandMessagePager(delta: number): void {
   if (!latestState) {
     return;
@@ -1946,14 +1864,9 @@ function scrollCommandMessagePager(delta: number): void {
   scheduleRenderState(latestState);
 }
 
-async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boolean> {
+function dispatchCommandMessagePagerKey(event: KeyboardEvent): boolean {
   if (!latestState || latestState.cmdline.visible || hasInteractiveMessage(latestState)
     || event.metaKey || isModifierOnlyKey(event.key)) {
-    return false;
-  }
-
-  const signature = commandMessageSignature(latestState);
-  if (!signature) {
     return false;
   }
 
@@ -1967,40 +1880,19 @@ async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boo
   const key = event.key;
   const lowerKey = key.toLowerCase();
 
-  if (key === "Escape" || lowerKey === "q") {
-    await dismissCommandMessagePagerWithInput(event);
-    return true;
-  }
-
   if (maxScroll > 0) {
-    if (key === "PageDown" || key === " " || (event.ctrlKey && isPhysicalKey(event, "KeyF"))) {
-      if (messagePagerScroll >= maxScroll) {
-        await dismissCommandMessagePagerWithInput(event);
-      } else {
-        scrollCommandMessagePager(maxRows);
-      }
+    const paging = hasReturnPromptMessage(latestState);
+    if (key === "PageDown" || (paging && (key === " " || (event.ctrlKey && isPhysicalKey(event, "KeyF"))))) {
+      if (messagePagerScroll >= maxScroll) return false;
+      scrollCommandMessagePager(maxRows);
       return true;
     }
-    if (key === "Enter") {
-      if (messagePagerScroll >= maxScroll) {
-        await dismissCommandMessagePagerWithInput(event);
-      } else {
-        scrollCommandMessagePager(1);
-      }
+    if (key === "ArrowDown" || (paging && (key === "Enter" || lowerKey === "j" || (event.ctrlKey && isPhysicalKey(event, "KeyE"))))) {
+      if (messagePagerScroll >= maxScroll) return false;
+      scrollCommandMessagePager(1);
       return true;
     }
-    if (key === "ArrowDown" || lowerKey === "j" || (event.ctrlKey && isPhysicalKey(event, "KeyE"))) {
-      if (messagePagerScroll >= maxScroll) {
-        dismissCommandMessagePager();
-        const encoded = encodeKey(event);
-        if (encoded) {
-          await window.jusi.sendInput(encoded);
-        }
-      } else {
-        scrollCommandMessagePager(1);
-      }
-      return true;
-    }
+    if (!paging && !["ArrowUp", "PageUp"].includes(key)) return false;
     if (key === "ArrowUp" || lowerKey === "k" || (event.ctrlKey && isPhysicalKey(event, "KeyY"))) {
       scrollCommandMessagePager(-1);
       return true;
@@ -2024,18 +1916,7 @@ async function dispatchCommandMessagePagerKey(event: KeyboardEvent): Promise<boo
     }
   }
 
-  if (key === "Enter") {
-    await dismissCommandMessagePagerWithInput(event);
-    return true;
-  }
-
-  dismissCommandMessagePager();
-  const encoded = encodeKey(event);
-  if (!encoded) {
-    return true;
-  }
-  await window.jusi.sendInput(encoded);
-  return true;
+  return false;
 }
 
 async function dispatchKey(event: KeyboardEvent): Promise<boolean> {
@@ -2051,7 +1932,7 @@ async function dispatchKey(event: KeyboardEvent): Promise<boolean> {
     return false;
   }
 
-  if (await dispatchCommandMessagePagerKey(event)) {
+  if (dispatchCommandMessagePagerKey(event)) {
     return true;
   }
 

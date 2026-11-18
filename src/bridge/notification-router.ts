@@ -209,8 +209,8 @@ export class NvimNotificationRouter {
               Boolean(payload[6]),
               this.asNumber(payload[7]),
               this.asNumber(payload[8] ?? 0),
-              this.asNumber(payload[9] ?? payload[4]),
-              this.asNumber(payload[10] ?? payload[5]),
+              payload.length >= 11 ? this.asNumber(payload[9]) : undefined,
+              payload.length >= 11 ? this.asNumber(payload[10]) : undefined,
             ],
           });
         } else if ((name === "win_close" || name === "win_hide" || name === "grid_destroy") && payload.length >= 1) {

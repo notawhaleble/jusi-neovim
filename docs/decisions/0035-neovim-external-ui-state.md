@@ -8,10 +8,14 @@ carry one lines/line argument; preserve their highlighted chunks separately from
 the active command line. Published snapshots are not mutated by later events.
 
 Command positions and external completion columns are UTF-8 byte offsets. Convert
-them at Unicode scalar boundaries, then measure the rendered styled text for the
-caret and completion anchor. Horizontal command scrolling uses the same measured
-position. A completion with missing grid ownership or missing command anchor is
-hidden rather than placed on a guessed grid. Completion rows retain kind/menu and
+them at Unicode scalar boundaries, then locate the rendered glyph using a DOM
+range. Long commands wrap upward from the command row. A trailing cell provides
+the end-of-input caret position, including when the last glyph fills a row.
+Commands taller than the editor scroll vertically to keep the caret visible.
+Command blocks and completion menus fit above the visible command rows. A completion with missing grid ownership or missing command anchor is
+hidden. Insert completion uses the outer grid's origin, including border cells.
+The editor grids and provider surfaces share a stacking context beneath the
+external command, message and completion layers. Completion rows retain kind/menu and
 the selected item's info. Special-character overwrite operates on a grapheme.
 
 Preserve attribute IDs on command, block, message, history and status chunks.
@@ -20,10 +24,9 @@ font measurements, retaining chunk attributes and explicit newlines. Prompt hl_i
 is a highlight *group* ID in Neovim 0.11.4, unlike the chunk attribute IDs; retain
 it in bridge state and resolve it separately as specified in ADR 0038.
 
-The local output pager must not consume answers to Neovim dialogs. Active command
-lines and confirm/confirm_sub/number_prompt messages bypass its input interception
-and synthetic hit-enter prompt. Neovim owns answer handling, cancellation and
-completion selection. Display-revision dismissal remains as specified in ADR 0032.
+Active command lines and confirm/confirm_sub/number_prompt messages bypass local
+viewport navigation. Neovim owns answer handling, cancellation, completion
+selection and hit-enter acknowledgement as specified in ADR 0032.
 
 Retain at most 128 KiB of UTF-8 text per message and 512 KiB per live/history list,
 with at most 200 entries and 4096 chunks per entry. Keep newest suffixes at Unicode

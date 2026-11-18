@@ -9,6 +9,14 @@ another incomplete frame. Delivery can coalesce completed snapshots; a timer
 cannot choose a partially redrawn state. Screen, highlight, cursor, overlay and
 window/grid geometry all participate in the same snapshot.
 
+Float geometry belongs to the grid allocation, including its border. For the
+eight-field win_float_pos event, resolve the specified corner against the
+anchor grid's origin and the float's allocated width and height. Recompute
+dependent positions when an anchor moves or resizes. Missing or cyclic anchor
+chains have no visible geometry. A hidden grid retains its allocation. Closing
+or destroying the anchor invalidates its former children's relative placement.
+When Neovim supplies explicit screen coordinates, use them directly.
+
 Authoritative provider and ownership metadata continues to advance immediately.
 Closing/replacing a buffer must revoke its identity and reject stale work without
 waiting for a UI flush. Metadata-only presentation updates remain coalesced when

@@ -1,3 +1,132 @@
+# Session handoff — 2026-11-18 (keyboard redraw and wrapped commands)
+
+Ctrl-D and Ctrl-U scroll five rows in the active right split. Desktop assertions
+compare every painted row and the sibling split before and after each key, then
+check the block cursor's glyph, pixel position and one/two-cell width on e plus
+a combining acute accent and on 文. These workflows passed with the existing
+grid renderer.
+
+Long commands previously scrolled horizontally in one row. The command layer
+now grows upward with its wrapped content. The caret and completion anchor use
+the glyph's rendered rectangle and Neovim's byte position. A command taller
+than the viewport scrolls with Home/End. Block output and completion fit above
+the visible command. The regression executes a long Unicode echo and checks
+that all rendered message rows fit and join to the original text.
+
+Primary agent, Node 24, Neovim 0.11.4, macOS arm64. Logs under .local/review/.
+
+- Entry harness, focused build/display smoke and final focused editor smoke
+  exited 0 (keyboard-harness.log, keyboard-focused.log, keyboard-editor.log).
+- npm run check and JUSI_TEST_REVIEW=keyboard npm run smoke:electron exited 0
+  (keyboard-check.log, keyboard-electron.log). The broad run also passed the
+  previously intermittent browser link fixture. Nonfatal WebContents listener
+  and guest teardown warnings, plus expected worker failure fixtures.
+- Local unpacked package build and JUSI_TEST_NVIM_ONLY=1 packaged editor
+  acceptance exited 0 (keyboard-package.log). Inspected nvim-keyboard-command.png
+  for upward wrapping and the visible tail caret.
+- Combined packaged CUA at the existing nvim-conformance checkpoint: an echo
+  yielded to Insert; a wrapped command survived Home/End and execution;
+  Ctrl-D/Ctrl-U moved the scratch split from row 1 to 4 and back. A bordered
+  float remained visible after resizing its split and disappeared on close.
+  The packaged workflow resumed and exited 0 (keyboard-manual.log). This
+  completes the editor UI review queue. Separate historical browser review
+  items retain their own status.
+
+The bounded editor workflows are verified on the existing macOS alpha baseline.
+No other Neovim version or Linux target was exercised. Next compatibility work
+requires a named additional alpha target. Browser release gates remain separate.
+
+# Session handoff — 2026-11-18 (split-relative floats and completion)
+
+The installed Neovim 0.11.4 sends eight-field win_float_pos. A real right-hand
+split at column 40 reported a bordered 10-by-5 grid with its southeast corner
+at (6,10) relative to that split. The old router used (6,10) as the absolute
+top left. The translator now resolves the allocated grid's corner and its
+anchor chain. Absolute-coordinate events retain their explicit placement.
+Nested anchor movement, hide/show, invalidation and grid-number reuse have
+unit coverage. Insert completion reads the visible grid bounds. External
+command/message/menu layers paint above editor and provider layers.
+
+The narrowed editor pass is in NEOVIM-CONFORMANCE-PLAN.md. Split-divider
+dragging is the default desktop mouse regression. Existing extended cases
+remain available with JUSI_TEST_EXTENDED_MOUSE=1.
+
+Primary agent, macOS arm64, Node 24. Logs in .local/review/.
+
+- Entry harness, npm run check (including build and live smoke), compositor and
+  translator cases exited 0 (float-harness.log, float-check.log).
+- JUSI_TEST_DISPLAY_ONLY=1 desktop and local unpacked test package build and
+  display smoke exited 0 (float-completion-keyword.log, float-package.log).
+  The test uses a bordered southeast float, resizes its right split to 32
+  columns, exercises keyword completion above that float and checks teardown.
+  Screenshot inspection confirmed the visible selected item and float border
+  (nvim-float-completion.png). Extended tuples are fixture-tested only.
+- JUSI_TEST_REVIEW=placement JUSI_TEST_NVIM_ONLY=1 desktop exited 0
+  (float-ack.log). All editor assertions also passed in the broader run.
+  JUSI_TEST_REVIEW=placement npm run smoke:electron exited 1 later in the
+  existing browser link-cursor fixture. Its ready mirror had the cursor at
+  {3,8} on the Unicode line instead of the link (float-acceptance.log).
+  This failure previously occurred in the ownership slice. Attribution open.
+- Initial build rejected an optional tuple spread (float-focused.log).
+  An expression-register fixture stayed in Insert with no completion event
+  (float-completion-diagnostic.log); switched to real keyword completion.
+- Earlier full runs missed the split-width assertion (float-electron.log,
+  float-electron-final.log). Pointer traces included a lost capture or a move
+  at unrelated coordinates. The instrumented editor run passed (float-drag.log).
+  A batched drag timed out (float-drag-final.log), and another had all pointer
+  events delivered but failed the width check (float-suite-ready.log).
+  nvim_input_mouse queues events and can lose intermediate positions. The
+  retained regression waits for Neovim to observe the divider press before
+  dragging and observes the width change before release. The initial editor
+  fixture now waits for a rendered grid following a startup echo timeout
+  (float-drag-isolated.log).
+- Linux, other Neovim versions and full browser package lanes were outside
+  this milestone. Manual review deferred; existing broader queue remains due.
+
+Next: keyboard-driven split scrolling and redraw, cursor alignment and long
+command/message wrapping on the same baseline.
+
+# Session handoff — 2026-11-18 (Neovim message lifecycle)
+
+A delayed Fugitive push uses echon before Neovim requests acknowledgement.
+Multiline output previously opened a local hit-enter pager on its own. Ordinary
+keys could dismiss that pager or reach Neovim while the command was waiting.
+ADR 0032 now follows the Neovim prompt and clear events. Ordinary keys reach
+the editor. Separate entries occupy separate block rows. A new nonempty
+showmode/showcmd retires ordinary live output and preserves active prompts and
+history. The startup demo respects the user's showmode setting.
+
+Primary agent, Node 24, macOS arm64, Neovim 0.11.4. Logs under .local/review/.
+
+- Entry harness and final npm run check exited 0 (messages-harness.log,
+  messages-final-check.log). The raw embedded trace in messages-probe.log
+  shows showmode after an echo without msg_clear, and busy_stop followed by
+  return_prompt after delayed shell output.
+- Installed Fugitive in Electron, temporary working and bare repositories,
+  blocked pre-receive hook and 120 progress lines: exit 0
+  (messages-git-desktop.log). Left during the stall preserved output, Enter
+  after completion dismissed it, and Git pull showed its own up-to-date
+  result. This exercised local Git transport.
+- Focused source editor workflow exited 0 (messages-final-focused.log).
+  JUSI_TEST_REVIEW=messages npm run smoke:electron with the extended watchdog
+  exited 0 (messages-suite.log). Nonfatal WebContents listener warnings.
+  Unpacked test package build and JUSI_TEST_NVIM_ONLY=1 packaged Electron
+  smoke exited 0 (messages-package.log). Browser package lanes omitted.
+- Initial desktop fixture timed out waiting for Insert after synthetic I
+  (messages-electron.log). Using nvim_input for the mode transition passed.
+  A shell fixture that injected Left during the stall passed the retained
+  output assertion but timed out waiting for a persistent return prompt
+  (messages-final-electron.log). Forwarded input can acknowledge the prompt.
+  The shell scroll fixture now leaves that input to the local Fugitive case.
+  Initial standalone Fugitive driver timed out before window creation while
+  Electron startup awaited module evaluation (messages-git.log).
+- Inspected nvim-message-tail.png for separate rows and the visible tail.
+  Manual interaction review deferred. Existing broader manual queue remains due.
+
+Next: resume the remaining editor display and platform conformance cases.
+Network Git latency, personal configuration and other Neovim versions remain
+outside this verification. Requirement statuses stay unchanged.
+
 # Session handoff — 2026-11-18 (browser ownership and test scope)
 
 A fullscreen grant carries the source and prior host state until HTML entry.

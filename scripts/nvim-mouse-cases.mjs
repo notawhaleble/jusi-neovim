@@ -19,6 +19,20 @@ export async function nvimMouseCases({win, command, waitFor}) {
   await js(`(() => { window.mouseTrace=[]; for(const type of ['pointerdown','pointermove','pointerup','pointercancel','lostpointercapture']) document.addEventListener(type,e=>{if(type==='pointerdown')window.mousePointerId=e.pointerId;window.mouseTrace.push({type,x:e.clientX,y:e.clientY,buttons:e.buttons,target:e.target.className||e.target.id});if(window.mouseTrace.length>30)window.mouseTrace.shift()},true) })()`);
   try {
     await command(`lua vim.o.mouse='a'; vim.o.showtabline=2; vim.o.tabline=''; vim.o.laststatus=2; vim.o.mousetime=500; vim.cmd('enew!'); vim.bo.buftype='nofile'; vim.bo.bufhidden='wipe'; vim.api.nvim_buf_set_lines(0,0,-1,false,{'alpha beta gamma','second line text','third line text','fourth line text'}); vim.wo.number=false; vim.wo.relativenumber=false; vim.wo.signcolumn='no'; vim.wo.foldcolumn='0'`);
+    await command('vsplit');
+    const windows=await waitFor(async()=>{const s=await state(); const ws=s.snapshot.windows.filter(w=>w.tabId===s.snapshot.currentTabId);return ws.length===2 && ws.every(w=>w.gridBounds) ? ws.sort((a,b)=>a.gridBounds.col-b.gridBounds.col):null});
+    const left=windows[0], width=left.gridBounds.width;
+    const separator=await point(1,left.gridBounds.row+2,left.gridBounds.col+width);
+    const end=await point(1,left.gridBounds.row+2,left.gridBounds.col+width+4);
+    mouse('mouseDown',separator);
+    await expect(`vim.fn.getmousepos().screencol == ${left.gridBounds.col+width+1}`);
+    mouse('mouseMove',end);
+    await expect(`vim.api.nvim_win_get_width(${left.id}) > ${width}`);
+    mouse('mouseUp',end);
+    await settled();
+    await command('only!');
+    console.log('Neovim split-divider drag resized the owning split');
+    if (process.env.JUSI_TEST_EXTENDED_MOUSE !== '1') return;
     let current=await waitFor(async()=>{const s=await state();return s.snapshot.windows.find(w=>w.tabId===s.snapshot.currentTabId && w.gridId>1)});
     let p=await point(current.gridId,1,3);
     await click(p);
@@ -54,15 +68,6 @@ export async function nvimMouseCases({win, command, waitFor}) {
     }
     await expect('#vim.g.wheel_axes >= 4');
     await command(`lua for _,k in ipairs({'ScrollWheelLeft','ScrollWheelRight','ScrollWheelUp','ScrollWheelDown'}) do assert(vim.tbl_contains(vim.g.wheel_axes,k),k); vim.keymap.del('n','<'..k..'>') end`);
-    await command('vsplit');
-    let windows=await waitFor(async()=>{const s=await state(); const ws=s.snapshot.windows.filter(w=>w.tabId===s.snapshot.currentTabId);return ws.length===2 && ws.every(w=>w.gridBounds) ? ws.sort((a,b)=>a.gridBounds.col-b.gridBounds.col):null});
-    const left=windows[0], width=left.gridBounds.width;
-    const separator=await point(1,left.gridBounds.row+2,left.gridBounds.col+width);
-    mouse('mouseDown',separator);await new Promise(resolve=>setTimeout(resolve,25));
-    const end=await point(1,left.gridBounds.row+2,left.gridBounds.col+width+4);
-    mouse('mouseMove',end);await expect(`vim.api.nvim_win_get_width(${left.id}) > ${width}`);
-    mouse('mouseUp',end);await settled();
-    await command('only!');
     // Native tab click and close use root-grid cells, not host-generated tab actions.
     await command(`file mouse-first`);await settled(); const first=(await state()).snapshot.currentTabId;
     await command('tabnew');await command('file mouse-second');

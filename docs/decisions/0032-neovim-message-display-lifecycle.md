@@ -7,19 +7,17 @@ message a monotonically increasing revision, using the message state's version
 at insertion/replacement/append. History publication also receives revisions.
 Optional Neovim message IDs remain separate from these display revisions.
 
-A local pager dismissal records a revision watermark. Unchanged earlier entries
-cannot reappear because an unrelated message changes the global version. New
-messages, including identical text and updates to an existing message, remain
-eligible for display. This is presentation state; it does not delete Neovim's
-message history or claim a command has completed.
+Only a Neovim `return_prompt` event requests hit-enter acknowledgement. A
+command can pause between writes even when no UI busy event is active, as
+Fugitive does with `:echon`. Output length determines the viewport and wrapping.
+It cannot establish whether the editor is waiting for a key.
 
-The viewport initially follows the output tail. It continues following while at
-the tail and preserves a user's scrolled-back position when more output arrives.
-Enter and Escape/q dismissal of a real return_prompt also forward input to Neovim.
-Only the protocol kind identifies return_prompt; message text is not a control
-signal. Synthetic pagers continue to dismiss locally.
+The viewport follows the tail until the user scrolls back. The renderer handles
+viewport navigation locally and routes ordinary input to Neovim. Enter at the
+tail reaches Neovim, which clears the acknowledged output via `msg_clear`.
+Display each independent live entry on its own row in a block. Apply append and
+replace requests in the bridge before wrapping entries.
 
-Handle msg_history_clear and accept the six-field cmdline_show shape used by older
-supported Neovim versions. This does not establish full command-line/dialog
-conformance: nested levels, highlighted chunks, Unicode byte positions and prompt
-variants remain in the integration review backlog.
+Neovim 0.11.4 can send a mode or command status without clearing a preceding
+echo. A nonempty showmode or showcmd takes over the output row, unless a dialog
+or return prompt owns it. Message history has a separate lifecycle.

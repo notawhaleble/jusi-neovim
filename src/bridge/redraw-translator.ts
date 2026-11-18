@@ -1,164 +1,93 @@
 import { GridBounds } from "../core/types.js";
 import { NvimGeometryEvent, NvimRedrawEvent } from "./protocol.js";
 
-type PartialGridBounds = {
-  mouseEnabled?: boolean;
-  gridId: number;
-  row: number;
-  col: number;
-  width: number;
-  height: number;
-  zIndex: number;
-  compIndex: number;
-};
+type Position = Extract<NvimRedrawEvent, { name: "win_pos" | "win_float_pos" }>;
+type Origin = { row: number; col: number };
 
 export class NvimRedrawTranslator {
-  private readonly grids = new Map<number, PartialGridBounds>();
+  private readonly sizes = new Map<number, { width: number; height: number }>();
+  private readonly positions = new Map<number, Position>();
+  private readonly published = new Map<number, { position: Position; bounds: GridBounds }>();
 
   translate(events: NvimRedrawEvent[]): NvimGeometryEvent[] {
+    if (!events.length) return [];
     const geometry: NvimGeometryEvent[] = [];
-
     for (const event of events) {
+      const [grid] = event.args;
       switch (event.name) {
         case "grid_resize":
-          this.handleGridResize(event.args[0], event.args[1], event.args[2], geometry);
+          this.sizes.set(grid, { width: event.args[1], height: event.args[2] });
           break;
         case "win_pos":
-          this.handleWinPos(
-            event.args[0],
-            event.args[1],
-            event.args[2],
-            event.args[3],
-            event.args[4],
-            event.args[5],
-            geometry,
-          );
+          this.sizes.set(grid, { width: event.args[4], height: event.args[5] });
+          this.positions.set(grid, event);
           break;
         case "win_float_pos":
-          this.handleFloatPos(
-            event.args[0],
-            event.args[1],
-            event.args[9],
-            event.args[10],
-            event.args[7],
-            event.args[8],
-            event.args[6],
-            geometry,
-          );
-          break;
-        case "win_hide":
-          // Hidden grids retain their allocation. Neovim may show a float again
-          // without grid_resize; remove visibility, not its known dimensions.
-          geometry.push({ type: "grid-close", gridId: event.args[0] });
+          this.positions.set(grid, event);
           break;
         case "win_close":
         case "grid_destroy":
-          this.grids.delete(event.args[0]);
-          geometry.push({
-            type: "grid-close",
-            gridId: event.args[0],
-          });
+        case "win_hide":
+          if (event.name !== "win_hide") {
+            this.sizes.delete(grid);
+            this.removeAnchoredPositions(grid, geometry);
+          }
+          this.positions.delete(grid);
+          this.published.delete(grid);
+          geometry.push({ type: "grid-close", gridId: grid });
           break;
       }
     }
 
+    for (const [gridId, position] of this.positions) {
+      const origin = this.origin(gridId, new Set());
+      if (!origin) {
+        if (this.published.delete(gridId)) geometry.push({ type: "grid-close", gridId });
+        continue;
+      }
+      const windowId = position.args[1];
+      const size = this.sizes.get(gridId) ?? { width: 0, height: 0 };
+      const bounds: GridBounds = { gridId, ...origin, ...size, mouseEnabled: true, zIndex: 0, compIndex: 0 };
+      if (position.name === "win_float_pos") {
+        bounds.mouseEnabled = position.args[6];
+        bounds.zIndex = position.args[7];
+        bounds.compIndex = position.args[8];
+      }
+      const previous = this.published.get(gridId);
+      if (previous?.position === position && previous.bounds.row === bounds.row &&
+          previous.bounds.col === bounds.col && previous.bounds.width === bounds.width &&
+          previous.bounds.height === bounds.height) continue;
+      this.published.set(gridId, { position, bounds });
+      geometry.push({ type: "grid-bounds", ...(windowId === null ? {} : { windowId }), bounds });
+    }
     return geometry;
   }
 
-  private handleGridResize(
-    gridId: number,
-    width: number,
-    height: number,
-    geometry: NvimGeometryEvent[],
-  ): void {
-    const next = {
-      ...(this.grids.get(gridId) ?? this.defaultGrid(gridId)),
-      width,
-      height,
-    };
-    this.grids.set(gridId, next);
-    geometry.push({
-      type: "grid-bounds",
-      bounds: this.toBounds(next),
-    });
+  // A destroyed grid's number can be reused. Its former children need a fresh
+  // position event before they can attach to that new owner.
+  private removeAnchoredPositions(parent: number, geometry: NvimGeometryEvent[]): void {
+    for (const [grid, position] of this.positions) {
+      if (position.name !== "win_float_pos" || position.args[3] !== parent) continue;
+      this.positions.delete(grid);
+      if (this.published.delete(grid)) geometry.push({ type: "grid-close", gridId: grid });
+      this.removeAnchoredPositions(grid, geometry);
+    }
   }
 
-  private handleWinPos(
-    gridId: number,
-    windowId: number | null,
-    row: number,
-    col: number,
-    width: number,
-    height: number,
-    geometry: NvimGeometryEvent[],
-  ): void {
-    const next = {
-      ...(this.grids.get(gridId) ?? this.defaultGrid(gridId)),
-      row,
-      col,
-      width,
-      height,
-      zIndex: 0,
-      compIndex: 0,
-      mouseEnabled: true,
-    };
-    this.grids.set(gridId, next);
-    geometry.push({
-      type: "grid-bounds",
-      ...(windowId === null ? {} : { windowId }),
-      bounds: this.toBounds(next),
-    });
-  }
-
-  private handleFloatPos(
-    gridId: number,
-    windowId: number | null,
-    row: number,
-    col: number,
-    zIndex: number,
-    compIndex: number,
-    mouseEnabled: boolean,
-    geometry: NvimGeometryEvent[],
-  ): void {
-    const next = {
-      ...(this.grids.get(gridId) ?? this.defaultGrid(gridId)),
-      row,
-      col,
-      zIndex,
-      compIndex,
-      mouseEnabled,
-    };
-    this.grids.set(gridId, next);
-    geometry.push({
-      type: "grid-bounds",
-      ...(windowId === null ? {} : { windowId }),
-      bounds: this.toBounds(next),
-    });
-  }
-
-  private defaultGrid(gridId: number): PartialGridBounds {
+  private origin(grid: number, visited: Set<number>): Origin | undefined {
+    if (grid === 1) return { row: 0, col: 0 };
+    const position = this.positions.get(grid);
+    if (!position || visited.has(grid)) return undefined;
+    if (position.name === "win_pos") return { row: position.args[2], col: position.args[3] };
+    const [, , corner, parent, row, col, , , , screenRow, screenCol] = position.args;
+    if (screenRow !== undefined && screenCol !== undefined) return { row: screenRow, col: screenCol };
+    visited.add(grid);
+    const anchor = this.origin(parent, visited);
+    const size = this.sizes.get(grid);
+    if (!anchor || !size || !["NW", "NE", "SW", "SE"].includes(corner)) return undefined;
     return {
-      gridId,
-      row: 0,
-      col: 0,
-      width: 0,
-      height: 0,
-      zIndex: 0,
-      compIndex: 0,
-      mouseEnabled: true,
-    };
-  }
-
-  private toBounds(bounds: PartialGridBounds): GridBounds {
-    return {
-      gridId: bounds.gridId,
-      mouseEnabled: bounds.mouseEnabled,
-      row: bounds.row,
-      col: bounds.col,
-      width: bounds.width,
-      height: bounds.height,
-      zIndex: bounds.zIndex,
-      compIndex: bounds.compIndex,
+      row: anchor.row + Math.floor(row) - (corner.startsWith("S") ? size.height : 0),
+      col: anchor.col + Math.floor(col) - (corner.endsWith("E") ? size.width : 0),
     };
   }
 }

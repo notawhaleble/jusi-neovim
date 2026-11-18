@@ -1,27 +1,33 @@
 # Planned Neovim UI conformance pass
 
-**Deferred by user direction on 2026-10-16.** Address the observed
-[web-buffer issues](WEB-BUFFER-ISSUES.md) first, then resume this pass. Afterward,
-define and execute the browser conformance boundary. This changes priority, not
-completion status or the supported-version/platform evidence.
+## Active scope agreed 2026-11-18
 
-Remaining checklist on deferral:
-- Float anchor/clipping/stacking compatibility; viewport/margins/extmark handling,
-  external windows and msg_set_pos disposition.
-- Language-map cursor highlights and inactive-window cursor behavior.
-- Font/spacing, highlight/popup blending and mouse preference support decisions.
-- Screenshot/error_exit, highlight semantic metadata, optional presentation events,
-  newer reconnect/restart events and incompatible-secondary-UI recovery policy.
-- Partial scrolling, fallback glyph clipping, alternate fonts, shaping/bidi/IME,
-  overlay width/wrapping and cursor/mouse alignment acceptance.
-- Minimum/current supported Neovim versions and Linux execution.
-- Real Linux Jusi attention, sibling custom tabline overflow, actual Fugitive push
-  diagnosis, and retained native focus/intermittent-integration observations.
+1. Place floats and completion menus using their owning grids. Exercise a split
+   move or resize, a bordered float, clipping, stacking and owner teardown.
+2. Verify keyboard-driven partial scrolling (Ctrl-D/Ctrl-U) in a split, wide
+   and combining cells under the cursor, and wrapping of long command lines
+   and messages. Fix reproducible failures in these workflows.
+3. Verify the same workflows on the versions and platforms used for the alpha.
+   The established baseline is Neovim 0.11.4 on macOS arm64. Record any additional
+   target before expanding the matrix.
 
-The detailed event/option disposition remains in NEOVIM-UI-INVENTORY.md; optional
-omissions require explicit decisions, not automatic implementation of every feature.
-Manual review queue at deferral: 0/3. No automatic continuation of C4 until the
-observed web-buffer queue is addressed or the user changes priority.
+Float placement and keyboard-driven redraw have scoped source and packaged
+acceptance on Neovim 0.11.4, macOS arm64 (2026-11-18 STATUS). This completes
+the listed editor workflows on the established alpha baseline. An additional
+version or platform requires its own acceptance run.
+
+Keep split-divider dragging as the editor mouse regression. The historical
+extended desktop cases are available with `JUSI_TEST_EXTENDED_MOUSE=1`. Existing wheel and
+selection behavior stays in place. Further mouse parity, exhaustive fonts and
+shaping, cosmetic cursor styles, popup blending, optional event coverage,
+external GUI windows and incompatible secondary-UI recovery are outside this
+pass. Browser pointer interactions have their own acceptance. Reopen a deferred
+capability for a concrete workflow. Custom tabline overflow belongs in its own
+repository. The delayed Fugitive push/pull message workflow has scoped local
+acceptance in STATUS.
+
+The table below records earlier implementation evidence. The bounded acceptance
+list above determines the remaining editor work.
 
 The scope is host/core and browser integration. Keep the existing architecture;
 complete one coherent milestone per session, including error paths and evidence.

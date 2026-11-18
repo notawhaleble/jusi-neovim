@@ -95,6 +95,23 @@ export async function nvimOverlayCases({win,command,waitFor}) {
     writeFileSync('.local/review/nvim-c3-completion.png',(await win.webContents.capturePage()).toPNG());
     await input('<Esc>');await hidden();
     await waitFor(async()=>!(await state()).popupmenu.visible);
+    const padding = 'x '.repeat((await state()).screen.cols);
+    await input(':OverlayComplete '+padding+'a<Tab>');
+    await waitFor(async()=>(await state()).popupmenu.visible);
+    await rendered();
+    const wrapped = await js(`(()=>{
+      const content=document.querySelector('.cmdline-content'), walker=document.createTreeWalker(content,NodeFilter.SHOW_TEXT);
+      let node, offset=content.textContent.lastIndexOf(' ')+1;
+      while ((node=walker.nextNode()) && offset>=node.length) offset-=node.length;
+      const range=document.createRange(); range.setStart(node,offset); range.setEnd(node,offset+1);
+      const glyph=range.getBoundingClientRect(), menu=document.querySelector('#popupmenu-layer').getBoundingClientRect();
+      const command=document.querySelector('#cmdline-layer').getBoundingClientRect();
+      return {left:menu.left, anchor:glyph.left, bottom:menu.bottom, top:command.top, row:glyph.top};
+    })()`);
+    assert.ok(wrapped.row>wrapped.top+10 && Math.abs(wrapped.left-wrapped.anchor)<2 && wrapped.bottom<=wrapped.top+1,
+      'completion anchors at the wrapped argument and clears the whole command');
+    await input('<Esc>');await hidden();
+
     await command('delcommand OverlayComplete');
     console.log('External cmdline nesting, UTF-8 caret, blocks, confirm/input/inputlist/substitute, highlights/history/errors and completion passed');
   } catch(error) {

@@ -219,10 +219,18 @@ export class NvimOverlayState {
         case "msg_showcmd":
         case "msg_ruler": {
           const slot = name === 'msg_showmode' ? 'showmode' : name === 'msg_showcmd' ? 'showcmd' : 'ruler';
-          const payload = payloads.find(Array.isArray) as unknown[] | undefined;
-          const chunks = boundChunks(decodeChunks(payload?.[0]), maxMessageBytes).chunks;
-          this.messages = { ...this.messages, [slot]: chunksText(chunks),
-            statusChunks: { ...this.messages.statusChunks, [slot]: chunks } };
+          for (const payload of payloads) {
+            if (!Array.isArray(payload)) continue;
+            const chunks = boundChunks(decodeChunks(payload[0]), maxMessageBytes).chunks;
+            const text = chunksText(chunks);
+            // Neovim may overwrite the message row with showmode without msg_clear.
+            const promptActive = this.messages.entries.some(entry =>
+              ['return_prompt', 'confirm', 'confirm_sub', 'number_prompt'].includes(entry.kind));
+            const takingRow = (slot === 'showmode' || slot === 'showcmd') && text && !promptActive;
+            const entries = takingRow ? [] : this.messages.entries;
+            this.messages = { ...this.messages, entries, [slot]: text,
+              statusChunks: { ...this.messages.statusChunks, [slot]: chunks } };
+          }
           break;
         }
         case "msg_history_clear":
