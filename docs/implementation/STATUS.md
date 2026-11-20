@@ -1,3 +1,36 @@
+# Linux x86-64 media-permissions test release, 2026-11-20
+
+Uploaded the portable tar.gz, SHA-256 file and dated installation notes to the
+existing v0.1.0-test prerelease. Built the working tree at 8a16469 with local
+media changes. Node 24 harness, dist:linux:portable:x64, archive verification,
+release upload, remote digest/size verification and notes update exited 0.
+The executable matches the cached Electron 44.5.0 Linux x64 binary. All 96
+checked application files match the working tree, including the Neovim media
+command and production Electron handler. The user subsequently confirmed the
+released build supports microphone and camera access in their Linux test.
+Logs and per-file hashes are under .local/review/linux-test-20261120/.
+Archive SHA-256 is 101a7575cd6dc813d7a7a7dcdb3f6b4e5208500e04e2d5fee6306d325f142080.
+
+# Site media permissions
+
+A disposable HTTPS fixture querying microphone and camera permissions saw
+denied with an empty profile. The host now exposes JusiWebAllowMedia in the
+current browser buffer. Both adapters verified decline, approval, both
+permissions reported as granted after reload, and denial at another origin.
+These automated checks exercise permission state.
+
+Node 24 logs in .local/review/. Focused source and packaged media cases exited
+0 on both adapters (meeting-query.log, meeting-package.log). npm run check and
+npm run smoke:electron exited 0. npm run smoke:package exited 1 in the native
+browser workflow waiting five seconds for the tab count to increase by one
+(meeting-final.log). That workflow does not invoke the media command. Next
+package checkpoint should investigate native link-tab delivery. No new manual
+device or dialog review was performed. Entry and handoff harness and diff check passed.
+
+# Local alpha manual review accepted
+
+The user completed the suggested manual workflows in a development instance and accepts the manual review as done. Candidate-based IME has no separate test result. The Linux microphone/camera settings report is open under R6. The host currently prompts for top-level HTTPS media requests and lists session grants by profile. The affected Linux device path has not been reproduced. Next alpha step is the final automated checkpoint. Documentation checks: Node 24 `npm run harness` and `git diff --check`.
+
 # Browser text marks and macOS focus, 2026-11-20
 
 Browser text mode offers visible letter targets on apostrophe. Both transports

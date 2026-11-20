@@ -29,6 +29,13 @@ page later returns to the same origin. Requests remain HTTPS/main-frame media on
 OS approval still applies. Unit fixtures cover the grant lifecycle, not real media
 hardware, entitlements or full adversarial iframe behavior.
 
+A site may query camera and microphone permission before calling
+getUserMedia. Electron reports a missing grant as denied. The current browser
+buffer exposes `:JusiWebAllowMedia` so the user can request both permissions
+through the same origin-specific confirmation and session grant store. The host
+takes the origin from the live guest. The command accepts no URL or profile
+argument. Physical device availability still depends on the OS.
+
 Private/local reset remains closing and reopening that isolated presentation.
 Permission history, per-origin revocation with live-stream shutdown, OAuth, devices,
 and certificate management are later work. Clearing does not promise forensic

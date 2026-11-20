@@ -63,7 +63,7 @@ Use the portable **linux-x64 `.tar.gz`** asset on the existing
 [test prerelease](https://github.com/notawhaleble/jusi-neovim/releases/tag/v0.1.0-test).
 Extract the entire archive into a user-owned directory on a filesystem that permits
 execution (for example `~/Applications/jusi-neovim`), then run the extracted
-`jusi-neovim` executable. The download's `LINUX-TESTING-20261020.md` has exact commands and
+`jusi-neovim` executable. The download's `LINUX-TESTING-20261120.md` has exact commands and
 checksums for that build. Keep the resources beside the executable.
 
 This format needs neither FUSE nor AppImage extraction into `/tmp`. The old
@@ -95,6 +95,8 @@ Development gate: `npm run smoke:adoption` exercises retained popup documents in
 Electron native views using disposable profiles. It also runs inside desktop and
 packaged smoke. This is a test fixture; production tab adoption is tracked in
 [the native-view plan](docs/implementation/NATIVE-VIEW-PLAN.md).
+
+For pages that direct you to browser settings, run `:JusiWebAllowMedia` in the HTTPS browser buffer. Confirm the site in the dialog and reload the page. The microphone and camera grant lasts for this app session in that profile.
 
 Browser popups stay inside the app. Run `:JusiWebAllowPopup`, then repeat the
 page action within 15 seconds. Use `:JusiWebAllowPopup!` to allow repeated

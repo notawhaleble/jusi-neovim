@@ -796,6 +796,19 @@ async function createWindow(): Promise<void> {
     if (!contents || contents.isDestroyed()) return;
     const target = {bufferId:current.bufferId,windowId:request.windowId,sessionId:current.sessionId,incarnation:current.incarnation};
     traceBrowser('browser.command', {contents:contents.id,buffer:current.bufferId,window:request.windowId,incarnation:current.incarnation,action:request.action,autoRefresh:current.autoRefresh});
+    if (request.action === 'allow-media') {
+      const url = contents.getURL();
+      if (!url.startsWith('https://')) {
+        feedback('Open the site directly in an HTTPS browser buffer to allow microphone and camera access.');
+        return;
+      }
+      void browserPermissions(contents.session).request(contents, 'media', {
+        requestingUrl: url, isMainFrame: true, mediaTypes: ['audio', 'video'],
+      }).then(allowed => feedback(allowed
+        ? 'Microphone and camera allowed for ' + new URL(url).origin + ' this session. Reload the page if needed.'
+        : 'Microphone and camera permission was not granted.'));
+      return;
+    }
     if (request.action === 'debug-mark') {
       void browserTraceMark({contents:contents.id,buffer:current.bufferId,window:request.windowId,tab:snapshot.currentTabId,
         fullscreen:win.isFullScreen(),focused:contents.isFocused(),url:traceBrowserUrl(contents.getURL()),autoRefresh:current.autoRefresh})

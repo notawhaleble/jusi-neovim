@@ -1,7 +1,7 @@
 import { browserWorkflowCases } from './browser-workflow-cases.mjs';
 import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { app, clipboard, ClipboardItem } from 'electron';
+import { app, clipboard, ClipboardItem, dialog } from 'electron';
 
 // Synthetic WebContents input can target hidden views, unlike physical input.
 // Check native visibility/focus and deliver in the same main-process turn.
@@ -12,6 +12,41 @@ export async function deliverGuestInput({host,guest,waitFor}, events) {
     for(const event of events)guest.sendInputEvent(event);
     return true;
   });
+}
+
+// HTTPS fixture belongs to the disposable test session. No devices are opened.
+export async function mediaGrantCases({guest,command}) {
+  const protocol = guest.session.protocol;
+  const original = dialog.showMessageBox;
+  const site = 'https://media.test';
+  protocol.handle('https', () => new Response('<title>Media permissions</title>', {
+    headers: {'Content-Type':'text/html'},
+  }));
+  try {
+    await guest.loadURL(site);
+    const states = () => guest.executeJavaScript(`Promise.all(['microphone','camera'].map(async name =>
+      (await navigator.permissions.query({name})).state))`);
+    assert.deepEqual(await states(), ['denied','denied']);
+    for (const allow of [false,true]) {
+      let promptSeen = false;
+      dialog.showMessageBox = async options => {
+        assert.ok(options.message.includes(site));
+        promptSeen = true;
+        return {response: allow ? 1 : 0};
+      };
+      await command('JusiWebAllowMedia');
+      await command(`lua assert(vim.wait(3000,function() local result=require('jusi_web').last_profile_result; return result and result.message:find("${allow ? 'allowed for' : 'not granted'}",1,true) end))`);
+      assert.ok(promptSeen);
+      await guest.loadURL(site);
+      assert.deepEqual(await states(), allow ? ['granted','granted'] : ['denied','denied']);
+    }
+    await guest.loadURL('https://other.test');
+    assert.deepEqual(await states(), ['denied','denied']);
+    console.log('Media permission checks, denial, approval and origin isolation passed');
+  } finally {
+    dialog.showMessageBox = original;
+    protocol.unhandle('https');
+  }
 }
 
 export async function markHintCases({host, guest, command, waitFor}) {

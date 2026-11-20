@@ -49,6 +49,8 @@ Sites control cookie expiry and may require login again. Session-only cookies,
 third-party OAuth, and browser-bound credentials are not promised to survive restart.
 No Chrome profile or credentials are imported.
 
+For pages that direct you to browser settings, run `:JusiWebAllowMedia` in the HTTPS browser buffer. Confirm the site in the dialog and reload the page. The microphone and camera grant lasts for this app session in that profile.
+
 Profile management commands require an explicit persistent profile name:
 
 - `:JusiWebPermissions work` lists this app session's camera/microphone grants.

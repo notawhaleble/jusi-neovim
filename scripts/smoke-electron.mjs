@@ -1,4 +1,4 @@
-import { markHintCases, browserInteractionCases, browserCommandCases } from './browser-interaction-cases.mjs';
+import { mediaGrantCases, markHintCases, browserInteractionCases, browserCommandCases } from './browser-interaction-cases.mjs';
 import { integratedNativePopupCases } from "./native-popup-cases.mjs";
 import { adoptionCases } from "./adoption-cases.mjs";
 import { popupCases } from "./popup-cases.mjs";
@@ -155,6 +155,7 @@ try {
   await status("ready");
   let guest = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL() === url);
   assert.ok(guest);
+  if (process.env.JUSI_TEST_MEDIA_ONLY === '1') { await mediaGrantCases({guest:guest,command}); return; }
   if (process.env.JUSI_TEST_HINTS_ONLY === '1') { await markHintCases({host:win,guest,command,waitFor});return; }
   if (process.env.JUSI_TEST_EDITING_ONLY === '1') {
     await win.webContents.executeJavaScript("window.jusi.sendInput('i')");
