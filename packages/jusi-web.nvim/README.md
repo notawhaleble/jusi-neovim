@@ -66,7 +66,9 @@ the reported failure. Cancellation preserves data and grants.
 The list contains current grants, not a persistent permission history. Private
 sessions are reset by closing their buffer and opening a new private buffer.
 
-Use `:JusiWebAllowPopup`, then repeat the page action within 15 seconds. One
+Use `:JusiWebAllowPopup`, then repeat the page action within 15 seconds. Use `:JusiWebAllowPopup!` to allow repeated
+foreground opens while this page has browser focus. Reloading or navigating to
+a new document clears the grant. The page can initiate these opens from scripts. One
 scripted popup opens in a horizontal Neovim split, retaining its exact Session and
 opener. Closing or navigating its source closes it. Unarmed or unsupported-scheme
 opens are blocked. Nested popups require their own explicit command. No extra app
@@ -108,6 +110,8 @@ DevTools window. In rich mode, F12 does the same (some keyboards require Fn-F12)
 This inspects the current document in either browser adapter. Close the tools
 window normally, or repeat the command; closing the browser document also closes
 its tools. DevTools can inspect and modify the page and its browser storage.
+
+In browser text mode, press `'` to label visible text, then type a label to jump to that exact position. Each scrollable region gets priority, followed by headings and table cells, then other text blocks. Existing lowercase marks keep their usual jumps. Escape cancels.
 
 Press **Ctrl-P** in a browser buffer (text or rich mode) to pause/resume automatic text building. `:JusiWebTogglePause` provides the same toggle; explicit `:JusiWebPause` and `:JusiWebResume` remain available.
 

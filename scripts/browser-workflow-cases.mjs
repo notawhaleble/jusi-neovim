@@ -3,11 +3,13 @@ import {readdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import assert from 'node:assert/strict';
 import {allowBrowserFullscreen} from '../dist/electron/browser-fullscreen.js';
-import {BrowserWindow,webContents} from 'electron';
+import {app,BrowserWindow,webContents} from 'electron';
 import {browserReviewPause,deliverGuestInput} from './browser-interaction-cases.mjs';
 
 /** Same browser workflows through both transports, with real shell and guest input. */
 export async function browserWorkflowCases({host,guest,command:runCommand,waitFor,statusSelector,openDuplicate}) {
+  if (process.platform === 'darwin') app.focus({steal:true});
+  host.focus();
   const command=async value=>{try{return await runCommand(value);}catch(error){console.error('Workflow command failed:',value);throw error;}};
   const js=code=>host.webContents.executeJavaScript(code);
   const historyTrace=[];
@@ -433,10 +435,16 @@ export async function browserWorkflowCases({host,guest,command:runCommand,waitFo
   await command(`lua assert(vim.wait(5000,function() return table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),' '):find('Manual paused refresh',1,true) ~= nil end,20))`);
   await command('JusiWebTogglePause');
   await guest.executeJavaScript(`document.querySelector('#volatile-word').textContent='Automatic resumed text'`);
-  await command(`lua assert(vim.wait(5000,function() return table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),' '):find('Automatic resumed text',1,true) ~= nil end,20))`);
+  await waitFor(()=>guest.executeJavaScript(`window.__jusiMirrorIndexMap?.some(entry=>entry?.node?.textContent==='Automatic resumed text')`));
+  await ready();
+  await command("lua assert(table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),' '):find('Automatic resumed text',1,true))");
   await ready();
   await command(`lua assert(vim.wait(3000,function() return require('jusi_neovim.browser').statusline():find('Text ready',1,true) ~= nil end,20));assert(vim.wo.statusline:find('jusi_neovim_browser_statusline',1,true))`);
   await waitFor(()=>js(`(() => {const status=document.querySelector(${JSON.stringify(statusSelector)}); if(!status)return false;return getComputedStyle(status.closest('.native-popup-control')||status).display==='none';})()`));
+  // sendInput is RPC: unlike a physical key it can run in an inactive app.
+  if (process.platform === 'darwin') app.focus({steal:true});
+  host.focus();
+  await waitFor(()=>host.isFocused());
   await js(`window.jusi.sendInput('i')`);
   await waitFor(()=>guest.isFocused());
   for (const paused of [true,false]) {

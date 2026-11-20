@@ -1,7 +1,7 @@
 import { browserWorkflowCases } from './browser-workflow-cases.mjs';
 import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-import { clipboard, ClipboardItem } from 'electron';
+import { app, clipboard, ClipboardItem } from 'electron';
 
 // Synthetic WebContents input can target hidden views, unlike physical input.
 // Check native visibility/focus and deliver in the same main-process turn.
@@ -14,11 +14,40 @@ export async function deliverGuestInput({host,guest,waitFor}, events) {
   });
 }
 
+export async function markHintCases({host, guest, command, waitFor}) {
+  const input = keys => host.webContents.executeJavaScript(`window.jusi.sendInput(${JSON.stringify(keys)})`);
+  await guest.executeJavaScript(`(() => {
+    const section=document.createElement('section'); section.id='hint-test';
+    section.innerHTML='<h2>Hint heading</h2><div style="width:340px;overflow:auto"><table style="width:800px"><tr><td>alpha</td><td>delta</td><td>far away</td></tr></table></div>';
+    document.body.prepend(section); window.scrollTo(0,0);
+  })()`);
+  await command("lua assert(vim.wait(5000,function() return table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),' '):find('delta',1,true) ~= nil end))");
+  await command('normal! ggma');
+  const overlay = "document.querySelector('#jusi-neovim-mark-hints')";
+  await input("'");
+  const key = await waitFor(()=>guest.executeJavaScript(`(() => { const h=${overlay}; if(!h)return null;
+    return [...h.targets].find(([,i])=>window.__jusiMirrorIndexMap[i].node.textContent==='delta')?.[0];})()`));
+  assert.notEqual(key,'a');
+  await browserReviewPause('mark-hints',host);
+  await input(key);
+  await waitFor(()=>guest.executeJavaScript(`!${overlay}`));
+  await command("lua assert(vim.wait(3000,function() return vim.fn.expand('<cword>')=='delta' end), vim.inspect(vim.api.nvim_win_get_cursor(0))); assert(vim.api.nvim_buf_get_mark(0,'"+key+"')[1]==0)");
+  await input("'a");
+  await waitFor(()=>host.webContents.executeJavaScript(`window.jusi.getInitialState().then(s=>s.snapshot.windows.some(w=>w.bufferId && w.cursor?.row===0 && w.id===s.snapshot.tabs.find(t=>t.id===s.snapshot.currentTabId)?.currentWindowId))`));
+  await input("'");
+  await waitFor(()=>guest.executeJavaScript(`!!${overlay}`));
+  await input('<Esc>');
+  await waitFor(()=>guest.executeJavaScript(`!${overlay}`));
+  await guest.executeJavaScript("document.getElementById('hint-test').remove()");
+  console.log('Visible table hint, exact jump, existing mark and cancellation passed');
+}
+
 /** Same real command acceptance through either browser transport. */
 export async function browserInteractionCases({ host, guest, command, waitFor, statusSelector }) {
   if (process.env.JUSI_TEST_BROWSER_WORKFLOW === '1') { await browserWorkflowCases({host,guest,command,waitFor,statusSelector}); return; }
   const js = code => host.webContents.executeJavaScript(code);
   if (process.env.JUSI_TEST_READING_ONLY === '1') { await browserReadingCases({host,guest,command,waitFor,statusSelector}); return; }
+  await markHintCases({host,guest,command,waitFor});
   await browserTextLimitCases({host,guest,command,waitFor,statusSelector});
   await browserReadingCases({host,guest,command,waitFor,statusSelector});
   await guest.executeJavaScript(`(() => {
@@ -181,6 +210,7 @@ export async function browserCommandCases({host,guest,waitFor,statusSelector}) {
     guest.sendInputEvent({type:'keyDown',keyCode,modifiers:['control']});
   };
   await browserClipboardCases({host,guest,waitFor});
+  if (process.env.JUSI_TEST_EDITING_ONLY === '1') return;
   const original=guest.getURL();
   await guest.executeJavaScript(`history.pushState({},'', '#command-one')`, true);
   await guest.executeJavaScript(`history.pushState({},'', '#command-two')`, true);
@@ -379,16 +409,16 @@ export async function browserReviewPause(stage, host) {
 
 // Clipboard stays a native editing action; page scripts get no clipboard bridge.
 async function browserClipboardCases({host,guest,waitFor}) {
-  const saved=await Promise.all((await clipboard.read()).map(async item=>
+  const saved=await Promise.all((await clipboard.read()).filter(item => item.types.length > 0).map(async item=>
     new ClipboardItem(Object.fromEntries(await Promise.all(item.types.map(async type=>[type,await item.getType(type)]))))));
   const modifiers=[process.platform==='darwin'?'meta':'control'];
-  const press=async(keyCode,plain=false)=>deliverGuestInput({host,guest,waitFor},[
-    {type:'keyDown',keyCode,modifiers:plain?[...modifiers,'shift']:modifiers},
-    {type:'keyUp',keyCode,modifiers:plain?[...modifiers,'shift']:modifiers}]);
+  const press=async(keyCode,shift=false)=>deliverGuestInput({host,guest,waitFor},[
+    {type:'keyDown',keyCode,modifiers:shift?[...modifiers,'shift']:modifiers},
+    {type:'keyUp',keyCode,modifiers:shift?[...modifiers,'shift']:modifiers}]);
   try {
     await guest.executeJavaScript(`(() => {
       const section=document.createElement('section');section.id='clipboard-fixture';
-      section.innerHTML='<p id="clipboard-selection">Copy 😀 from page</p><textarea id="clipboard-field" aria-label="Clipboard test"></textarea><div id="clipboard-rich" contenteditable="true" aria-label="Rich clipboard test"></div>';
+      section.innerHTML='<p id="clipboard-selection">Copy 😀 from page</p><input id="clipboard-input" aria-label="Single-line clipboard test"><textarea id="clipboard-field" aria-label="Clipboard test"></textarea><div id="clipboard-rich" contenteditable="true" aria-label="Rich clipboard test"></div>';
       document.body.prepend(section);
       const range=document.createRange();range.selectNodeContents(section.firstChild);
       getSelection().removeAllRanges();getSelection().addRange(range);
@@ -408,11 +438,99 @@ async function browserClipboardCases({host,guest,waitFor}) {
     await guest.executeJavaScript(`document.querySelector('#clipboard-rich').focus()`);
     await press('V',true);
     await waitFor(()=>guest.executeJavaScript(`document.querySelector('#clipboard-rich').innerText.includes('Paste 😀')`));
+    await deliverGuestInput({host,guest,waitFor},[
+      {type:'keyDown',keyCode:'\\',modifiers:['control']}, {type:'keyUp',keyCode:'\\',modifiers:['control']},
+      {type:'keyDown',keyCode:'N',modifiers:['control']}, {type:'keyUp',keyCode:'N',modifiers:['control']}]);
+    await waitFor(()=>guest.executeJavaScript('!document.hasFocus()'));
+    await host.webContents.executeJavaScript("window.jusi.sendInput('i')");
+    await waitFor(()=>guest.executeJavaScript('document.hasFocus()'));
+    const replacement='Replacement 😀';
+    await clipboard.writeText(replacement);
+    for (const id of ['clipboard-input','clipboard-field','clipboard-rich']) {
+      const field = `document.getElementById(${JSON.stringify(id)})`;
+      const value = field + (id==='clipboard-rich'?'.textContent':'.value');
+      const original = 'Original ' + id;
+      await guest.executeJavaScript(`${value}=${JSON.stringify(original)}; ${field}.focus()`);
+      await press('A');
+      await press('V');
+      const expectValue = expected=>waitFor(()=>guest.executeJavaScript(`${value}===${JSON.stringify(expected)}`));
+      await expectValue(replacement);
+      await press('Z');
+      await expectValue(original);
+      await press('Z',true);
+      await expectValue(replacement);
+    }
     assert.equal(await guest.executeJavaScript(`typeof window.jusi`),'undefined');
+    const cloneUrl = 'https://github.com/example/fixture.git';
+    await waitFor(()=>guest.executeJavaScript('!navigator.userActivation.isActive'));
+    assert.equal(await guest.executeJavaScript(`navigator.clipboard.writeText('unexpected').then(()=>true,()=>false)`),false);
+    assert.equal(await clipboard.readText(),replacement);
+    const point = await guest.executeJavaScript(`(() => {
+      const section=document.querySelector('#clipboard-fixture');
+      const button=document.createElement('button');
+      button.textContent='Copy clone URL';
+      button.onclick=async () => {
+        button.dataset.read=await navigator.clipboard.readText().then(()=>'allowed',()=>'denied');
+        try { await navigator.clipboard.writeText(${JSON.stringify(cloneUrl)}); button.dataset.copied='yes'; }
+        catch (error) { button.dataset.copied=error.name; }
+      };
+      section.prepend(button);
+      button.scrollIntoView({block:'center'});
+      const r=button.getBoundingClientRect();
+      return {x:Math.floor(r.left+r.width/2),y:Math.floor(r.top+r.height/2)};
+    })()`);
+    // Activate the test app as a physical click would, including the embedded
+    // webview element after a Neovim tab switch.
+    if (process.platform === 'darwin') app.focus({steal:true});
+    host.focus();
+    await host.webContents.executeJavaScript(`Array.from(document.querySelectorAll('webview'))
+      .find(view => view.getWebContentsId() === ${guest.id})?.focus()`);
+
+    guest.focus();
+    await waitFor(() => {
+      if (!host.isFocused() || !guest.isFocused()) return false;
+      guest.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
+      guest.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});
+      return true;
+    });
+    const copied=await waitFor(()=>guest.executeJavaScript("document.querySelector('#clipboard-fixture button').dataset.copied"));
+    assert.equal(await guest.executeJavaScript("document.querySelector('#clipboard-fixture button').dataset.read"),'denied');
+    assert.equal(copied,'yes','trusted copy button can write the clone URL');
+    await guest.executeJavaScript("document.querySelector('#clipboard-input').focus()");
+    await press('A');await press('V');
+    await waitFor(()=>guest.executeJavaScript(`document.querySelector('#clipboard-input').value===${JSON.stringify(cloneUrl)}`));
+    if (process.env.JUSI_TEST_REVIEW === 'composition') {
+      await guest.executeJavaScript(`(() => {
+        const field = document.querySelector('#clipboard-input');
+        field.select();
+        window.compositionLog = [];
+        for (const type of ['keydown','keyup','compositionstart','compositionupdate','compositionend','beforeinput','input','blur']) {
+          field.addEventListener(type, event => {
+            if (event.isTrusted) window.compositionLog.push({type, data:event.data, composing:event.isComposing, inputType:event.inputType});
+          });
+        }
+      })()`);
+      await browserReviewPause('composition', host);
+      const result = await guest.executeJavaScript(`(() => {
+        const field = document.querySelector('#clipboard-input');
+        const events=window.compositionLog;
+        return {started:events.some(e=>e.type==='compositionstart'), committed:events.find(e=>e.type==='compositionend')?.data, value:field.value, events};
+      })()`);
+      const lastInput = result.events.findLast(e => e.type === 'input');
+      const released = result.events.slice(result.events.lastIndexOf(lastInput) + 1)
+        .some(e => e.type === 'keyup' && e.composing === false);
+      // AppKit dead keys can end marked text before key-up without a DOM
+      // compositionend on the input. Require trusted events and the final value.
+      assert.ok(result.started && lastInput?.inputType === 'insertCompositionText'
+        && lastInput.data === result.value && (result.committed === result.value || released),
+        'expected native composition and committed text: '+JSON.stringify(result));
+      console.log('Native composition committed in browser input', JSON.stringify(result));
+    }
     await browserReviewPause('clipboard',host);
-    console.log('Shared clipboard selection copy, Unicode multiline paste, cut and plain paste passed');
+    console.log('Shared clipboard editing, activated copy button, paste round trip and permission denials passed');
   } finally {
     await guest.executeJavaScript(`document.querySelector('#clipboard-fixture')?.remove()`);
-    await clipboard.write(saved);
+    if (saved.length) await clipboard.write(saved);
+    else clipboard.clear();
   }
 }

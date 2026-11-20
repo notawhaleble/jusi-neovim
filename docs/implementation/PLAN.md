@@ -8,7 +8,36 @@ proceed while platform evidence is unavailable, provided the prerequisite stays
 open and its missing evidence remains explicit. M2 work need not wait for a Linux
 machine; M2 cannot be marked complete while its M1 prerequisite is incomplete.
 
-## Current priority — reported web-buffer defects
+## Current priority — everyday browser use
+
+On 2026-11-18 the user reports smooth fullscreen operation in daily use. Close
+the active fullscreen replay item and keep the existing regressions. The scoped
+Neovim editor pass is complete on the macOS alpha baseline.
+
+1. **Edit text with browser focus.** In a normal input, textarea and
+   contenteditable editor, select all in the focused field, copy/cut, paste,
+   and undo/redo. Use the platform editing modifier (Command on macOS, Control
+   on Linux). Verify a real key sequence such as select all, paste replacement
+   text, then undo, including after switching from Neovim back to the page.
+   Accepted for both adapters on the macOS baseline, including packaged focus
+   round trips, select-all/paste replacement and native undo/redo. Linux
+   modifier selection has unit coverage. See ADR 0049 and STATUS.
+2. **Copy from a page button.** Use GitHub’s clone URL as the acceptance case:
+   click Copy in the Code menu, paste into a scratch field, and compare with
+   the displayed URL. Keyboard copy already has a different path. Exercise a
+   real button invoking navigator.clipboard.writeText through a user gesture
+   on a secure page. Keep clipboard reads and background writes outside this
+   capability. Verified on macOS with a real GitHub clone URL in the default
+   adapter and a controlled click, paste and denial case in both adapters.
+3. **Reduce popup retries.** Electron exposes no causal gesture flag on a window-open
+   request. ADR 0053 adopts an explicit focused-page grant for repeated opens
+   until reload or navigation. The plain command retains its 15-second permit.
+
+Local alpha setup/restart (A4) is accepted on macOS arm64. Next is the combined
+input/layout and final acceptance (A3/A5). A1 retains its deferred performance
+decision.
+
+## Earlier web-buffer investigations
 
 2026-11-05: ordinary video exit is reproducible with a second live DOM webview.
 Electron sibling exit propagation can window the shared host independently of

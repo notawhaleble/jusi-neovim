@@ -1,3 +1,254 @@
+# Browser text marks and macOS focus, 2026-11-20
+
+Browser text mode offers visible letter targets on apostrophe. Both transports
+passed exact table-cell jumps, user mark preservation and Escape cancellation.
+The packaged native child retained focus through interrupted delivery and five
+text refreshes after removing redundant calls to show an already visible view.
+The synthetic rich-entry workflow now activates the host before sending input.
+
+Node 24 checks under `.local/review/`: `npm run check`, focused hints on both
+transports and `npm run smoke:electron` exited 0 (mark-final.log). The package
+matrix passed default, native, interrupted focus, alpha everyday and default
+workflow stages, then exited 1 because the workflow assertion searched the DOM
+adapter's attached views for a native child. After switching the assertion to
+the guest text map and checking committed Neovim text, the repackaged
+`node scripts/smoke-package.mjs --workflow-only` exited 0 for both transports
+(mark-workflows.log). macOS ABC Option-E then E produced é in the packaged
+input; mark-composition.log records the trusted event sequence. Candidate IME,
+remaining manual layout checks and A1 performance review are still open.
+
+# A3/A5 checkpoint — macOS arm64, 2026-11-19
+
+Gates open. Used an unsigned instrumented 0.1.0 package, Electron 44.5.0,
+Node 24 and a disposable profile. The installed app was untouched.
+With the ABC input source, actual macOS Option-E then E replaced the selected
+field contents with é. Command-A/C, Right and Command-V produced éé. The
+composition checkpoint captured a trusted start but no end on the field; the
+assertion failed (a3-composition-2.log). Candidate-based input, additional
+manual layout/zoom, text cap, commands and the native-adapter queue remain open.
+The input sources enabled during the review were ABC and Russian layouts.
+
+The first attempt failed saving an empty system clipboard; the fixture now
+handles a zero-type item. Synthetic copy after the preceding tab switch also
+ran without OS focus. The fixture activates the app and focuses the embedded
+document before sending the trusted click. These are harness changes.
+
+Checks below use .local/review/ logs. Entry/handoff harness and diff check
+passed. npm run check exited 0 (a5-check.log). Source smoke first failed copy
+permission, then timed out on focus (a5-source.log, a5-source-final.log);
+focused clipboard smoke and the final full npm run smoke:electron exited 0
+(a5-copy-focused.log, a5-source-active.log). npm run smoke:package initially
+timed out on that same click. After fixture activation the default packaged
+smoke passed; the full matrix exited 1 waiting for native focus after rich
+entry (native-popup-cases.mjs, a5-package-active.log). A focused native run
+recovered interrupted focus delivery then lost focus with the view still
+visible during refresh (a5-native-focus.log, exit 1).
+
+Ran the remaining package workflows individually. The alpha everyday test
+passed (a5-alpha-workflow.log, exit 0). Both browser workflow adapters timed
+out at browser-workflow-cases.mjs waiting for guest focus after sending i
+following pause, refresh and resume (a5-{browser,native}-workflow.log, exit 1).
+Next: distinguish OS window activation from guest focus loss at that shared
+transition; capture the native composition event sequence before accepting A3.
+A1 performance disposition is still deferred.
+
+# Session handoff — A4 local setup accepted on macOS arm64
+
+The installed app loaded a disposable init.lua marker in normal mode and skipped
+it with JUSI_NVIM_CLEAN=1. A loopback server set a persistent cookie on the first
+launch, received it after a full restart and received none from a private buffer.
+Both Neovim :qa! exits returned 0. The user also confirmed normal profile and
+private browsing in the installed build.
+
+A disposable copy of the installed app with JUSI_NVIM pointing to a nonexistent
+file showed the native “Jusi Neovim could not start” alert with the failing path
+and ENOENT. Observed via macOS accessibility, dismissed OK, verified exit 1
+(expected). Logs under .local/review/: a4-final-test.log and a4-error.log.
+Entry/handoff npm run harness and git diff --check passed. Documentation and
+installed-app verification only; full build and desktop/package suites deferred
+to A5. See [macOS quickstart](../MACOS-QUICKSTART.md). Next: combined A3/A5
+input/layout review, including real OS IME, followed by final suites.
+
+# Session handoff — 2026-11-19 (repeated macOS launch delay)
+
+The installed app matches the rebuilt first-frame host. Three Launch Services
+starts, each after a full quit and using the normal profile, took 5.43, 4.41
+and 4.41 seconds. An instrumented copy spent 3.89–3.91 seconds reading shell
+localStorage for editor zoom. The already-running development Electron held
+the installed app’s Local Storage/leveldb/LOCK. Prior disposable-profile
+measurements missed this contention.
+
+The npm run electron launcher now passes a persistent checkout-local Chromium
+data directory. The existing installed build and its data need no migration.
+Quit the previously started development session normally to release its old
+lock. Future dev launches keep separate browser logins and editor zoom.
+
+Node 24, macOS arm64. Entry/handoff harness, npm run check, focused real
+launcher/package regression and git diff --check exited 0. With the updated
+development process running, three full launches of the installed executable
+through Launch Services using the same disposable package profile took 1.03 s
+initially, 4.39 s with its database lock deliberately held, and 0.47 s after
+release. Verified the development process held its checkout-local lock. Logs:
+.local/review/startup-profile-{boot,check,regression}.log. The user's running
+development session was left open. Earlier first-use pre-main latency is
+separate. No production package or guest behavior changed in this slice.
+Full desktop/package matrix and manual review not run. Next A4 work remains
+clean mode, startup-failure feedback, persistence and quickstart.
+
+# Session handoff — 2026-11-19 (macOS first visible editor frame)
+
+The host used to show its native window before it began loading the shell,
+then waited for Neovim UI attachment and host IPC setup. It now preloads the
+local shell/module graph during setup and reveals the window after rendering
+initial state, installing input handlers and allowing a frame to paint. Startup
+exceptions surface in a native error dialog. The packaged app in /Applications
+was left in place. Replacement DMG/ZIP: `release/a4-startup-arm64-8jWGAv/`.
+
+On this macOS arm64 machine, launch to renderer diagnostics for the installed
+app took 1.749 s then 0.485 s; development took 0.442 s then 0.395 s. The
+new production app took 3.664 s then 0.461 s. Runs used the user's normal
+Neovim init, a temporary Electron data directory, an explicit Neovim binary,
+and a minimal PATH and root cwd for the package. These are direct executable
+launches; Finder timings and a consistent speedup are unverified. In the new
+first run 3.44 s elapsed before Neovim's startup log began, and its own start
+took 0.131 s. A separate instrumented ZIP extraction reached the first
+main-module statement at 1.778 s and window show at 2.219 s. The source of
+the pre-main delay is still unresolved.
+
+Node 24, exit 0: npm run harness, npm run check, JUSI_TEST_REVIEW=startup npm
+run smoke:electron, unsigned npm run dist:mac, hdiutil verify, unzip -tqq,
+two production launches and clean exits, and git diff --check. The focused
+JUSI_TEST_STARTUP_ONLY Electron case passed in source and an instrumented
+macOS package. It asserted hidden on creation, theme/grids on show and Insert
+mode on the first key. Logs: .local/review/startup-{before-times,after-times,
+phase-probe,first-frame,package-first-frame,check,electron,dist,archive}.log.
+Full instrumented package matrix, Linux and manual visual review deferred.
+Next A4 work: clean-mode and startup-failure feedback, profile persistence and
+the quickstart.
+
+# Session handoff — 2026-11-19 (A4 local macOS package)
+
+Built the working tree with Node 24 and npm run dist:mac for Apple Silicon,
+using a fresh output directory and disabling signing identity discovery. Build
+exit 0. The production DMG, ZIP and unpacked app are in
+`release/a4-macos-arm64-ldoHfQ/`. Version 0.1.0, unsigned local alpha.
+
+hdiutil verify and unzip -tqq exited 0. Launched directly from the read-only
+DMG twice using a disposable Neovim init and Electron data directory. Both
+launches reported the renderer ready and the configured Neovim command
+available; both :qa! exits returned 0. Initial verification wrapper exited 1
+at cleanup because StoreKit held the mounted binary open. The read-only test
+image was subsequently ejected successfully. Logs: .local/review/a4-mac-{build,
+artifacts,launch-1,launch-2}.log. Entry harness and handoff diff check passed.
+
+Package build only. Clean-mode startup, missing-Neovim feedback, browser profile
+data persistence and the alpha quickstart remain in A4. Broader desktop and
+instrumented package suites were not rerun for this production build.
+
+# Session handoff — 2026-11-19 (repeat popup approval)
+
+Use `:JusiWebAllowPopup!` once in the initiating browser buffer to allow
+repeated foreground opens, including scripted opens, while it has focus.
+Reload or cross-document navigation clears approval. The existing plain
+command allows one open within 15 seconds. ADR 0053 records why Electron's
+synchronous handler cannot attribute the request to a particular physical click.
+
+Root and retained-child openers share the grant and one-active-child policy.
+The nested integration case also found Electron WebContents in a Neovim RPC
+allocation payload. Native opener identity now supplies only buffer ID,
+session ID and incarnation to document events, URL publication and allocation.
+
+Node 24, macOS arm64. Logs under .local/review/.
+- Entry/handoff npm run harness, npm run check and git diff --check exited 0
+  (popup-daily-harness.log, popup-daily-handoff.log, popup-daily-check.log).
+- Build and popup-policy unit passed. Initial nested fixture failed allocating
+  a native grandchild (popup-daily-focused.log). Source and unsigned packaged
+  focused runs then exited 0 (popup-daily-nested.log, popup-daily-package.log,
+  popup-daily-package-focused.log). Both openers created two successive children
+  per grant, retained the source Session and rejected a concurrent child.
+  Reload revoked the native opener's grant.
+- JUSI_TEST_REVIEW=popup-validation npm run smoke:electron exited 1
+  (popup-daily-electron.log). The trace shows host and webview both unfocused
+  at the copy-button mouse event; clipboard write returned NotAllowedError.
+  Focused source JUSI_TEST_EDITING_ONLY=1 passed (popup-daily-copy-focused.log).
+- Combined manual review attempted at queue 3/3. Packaged web buffer displayed
+  the focused-page grant and review controls. CUA returned noWindowsAvailable
+  on the first click. After loss of focus the review run denied the open
+  (popup-daily-review-final.log, exit 1). The first review fixture had returned
+  a non-cloneable JS function; corrected before this run. Interactive editing,
+  copy and repeated opens on both adapters remain queued. Linux, real OAuth
+  and the full package matrix were not run.
+- Next: local alpha setup/restart (A4), outstanding combined input/layout and
+  final acceptance (A3/A5), including the interrupted manual review.
+
+# Session handoff — 2026-11-19 (site copy buttons)
+
+GitHub’s Code menu copied the displayed HTTPS clone URL for neovim/neovim.
+Scripted Electron input clicked the real control in the default adapter and
+verified the exact URL pasted into a separate Neovim scratch buffer. Secure,
+focused top-level pages with transient user activation can now request a
+sanitized clipboard write. Permission is evaluated per request.
+
+Node 24, macOS arm64. Logs in .local/review/:
+
+- The fixture reproduced NotAllowedError before the change (copy-button-before.log).
+  Both source adapters then passed the click/paste, read denial and expired
+  activation cases (copy-button-{dom,native}-final.log, exit 0). An earlier native
+  fixture startup timed out waiting for its child to become visible.
+- The real GitHub result is in copy-button-github-control.log. A teardown IPC
+  warning followed the successful paste assertion.
+- npm run check exited 0 (copy-button-check.log). The full npm run smoke:electron
+  with JUSI_TEST_REVIEW=copy-validation exited 1 after passing clipboard cases.
+  The default Unicode mirror caret was absent at column 1 (copy-button-electron.log).
+  The interaction-only retry stopped earlier waiting for the populated split in
+  keyboardRedrawCases (copy-button-caret-focused.log, exit 1). The full desktop
+  suite remains unresolved.
+- Unsigned macOS package build and default adapter clipboard smoke passed.
+  Native setup initially timed out waiting for the child control after host blur
+  (copy-button-package.log, batch exit 1). The same packaged native clipboard
+  workflow passed in isolation (copy-button-package-native-focused.log, exit 0).
+  Linux and the full package matrix were not exercised. Manual review deferred,
+  UI queue 2/3. Entry and handoff harness and git diff --check passed.
+- Next daily-use milestone is reducing repeated popup approvals.
+
+# Session handoff — 2026-11-18 (focused browser editing)
+
+Both browser adapters route platform select-all, undo and redo to the receiving
+WebContents through the shared editing dispatcher. The end-to-end case returns
+to Neovim and back to rich focus, then uses real key events to select all,
+paste replacement text, undo and redo in an input, textarea and contenteditable.
+Copy, cut, Unicode multiline paste and paste-as-plain-text remain covered.
+
+Primary agent, Node 24, macOS arm64. Logs under .local/review/.
+- Entry harness, build and browser-command unit checks exited 0
+  (editing-harness.log, editing-build.log). Unit cases cover missing,
+  destroyed and throwing actions, platform modifiers and composition bypass.
+- JUSI_TEST_EDITING_ONLY=1 source desktop tests exited 0 on both adapters
+  (editing-dom.log, editing-native.log). npm run check and
+  JUSI_TEST_REVIEW=editing npm run smoke:electron exited 0 (editing-check.log,
+  editing-electron.log).
+- Local unsigned package build and the same focused packaged desktop tests
+  on both adapters exited 0 (editing-package.log). Nonfatal listener warnings
+  and a source DOM Widget teardown message. Full browser package matrix and
+  live Linux editing were outside this slice. Manual review deferred (editor
+  interaction queue 1/3 since the last combined review).
+- Next: site-initiated copy buttons, including GitHub's clone URL. Popup
+  retry policy follows that milestone. No new page permission in this slice.
+
+# Session handoff — 2026-11-18 (daily browser scope)
+
+The user reports fullscreen works smoothly. Remove real-site fullscreen replay
+from the active daily-use queue. The next browser cases are focused field
+editing, GitHub-style copy buttons, and fewer repeat popup approvals. PLAN
+records existing behavior, acceptance examples and a proposed gesture-based
+popup rule. The popup design and clipboard permission work are pending.
+
+Roadmap-only change. Inspected shared command dispatch, session permission
+handling, popup permits, README and both-adapter clipboard fixtures. Entry and
+handoff npm run harness and git diff --check passed. Build, desktop, package
+and manual suites omitted. Next milestone: verify and complete focused editing
+shortcuts across both adapters, starting with select-all and paste replacement.
+
 # Session handoff — 2026-11-18 (keyboard redraw and wrapped commands)
 
 Ctrl-D and Ctrl-U scroll five rows in the active right split. Desktop assertions

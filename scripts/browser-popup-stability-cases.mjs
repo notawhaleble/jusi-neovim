@@ -4,7 +4,7 @@ import { writeFileSync } from 'node:fs';
 
 // Opt-in real-site diagnosis, using the existing isolated-profile desktop harness.
 export async function browserPopupStabilityCases({waitFor}) {
-  const host = await waitFor(() => BrowserWindow.getAllWindows()[0]);
+  const host = await waitFor(() => BrowserWindow.getAllWindows().find(window => window.isVisible()));
   const js = code => host.webContents.executeJavaScript(code);
   const command = value => js(`window.jusi.runCommand(${JSON.stringify(value)})`);
   await waitFor(() => js('!!window.jusi'));

@@ -5,10 +5,17 @@ windows and tabs. Web browsing is the first provider; additional providers insta
 as normal Neovim packages. This is an experimental foundation, not yet a browser
 with verified Chrome-equivalent safety or complete Markdown/PDF/EPUB viewers.
 
+[macOS installation and quickstart](docs/MACOS-QUICKSTART.md)
+
 ```sh
 npm install
 npm run electron
 ```
+
+Development launches store Electron data, including browser logins and editor
+zoom, in `.local/electron-dev-profile/` under this checkout. The installed app
+keeps its existing data in the platform application data directory. Both use
+your normal Neovim configuration by default.
 
 Requires Node.js 22.12 or newer, Neovim (tested with the installed version recorded in the handoff),
 and a graphical desktop. Normal Neovim configuration loads by default;
@@ -90,7 +97,9 @@ packaged smoke. This is a test fixture; production tab adoption is tracked in
 [the native-view plan](docs/implementation/NATIVE-VIEW-PLAN.md).
 
 Browser popups stay inside the app. Run `:JusiWebAllowPopup`, then repeat the
-page action within 15 seconds. The retained popup opens in a horizontal Neovim
+page action within 15 seconds. Use `:JusiWebAllowPopup!` to allow repeated
+foreground opens while this page has browser focus. Reloading or navigating to
+a new document clears the grant. The page can initiate these opens from scripts. The retained popup opens in a horizontal Neovim
 split, shares its source Session/opener, and closes when its source navigates or
 closes. No extra app frame is created. Use Ctrl-\ then Ctrl-N for Neovim focus,
 `i` for browser input, and Ctrl-Q to close the presentation.
@@ -127,7 +136,13 @@ native integration cases.
 In rich mode (press `i`), use **Cmd-C / Cmd-X / Cmd-V** on macOS or
 **Ctrl-C / Ctrl-X / Ctrl-V** on Linux to copy, cut, and paste in the page.
 Add **Shift** to paste as plain text. Select page text to copy it, or focus an
-editable field to paste. In text mode, use Neovim's normal clipboard registers.
+editable field to paste. With the same platform modifier, **A** selects all,
+**Z** undoes the last edit, and **Shift-Z** redoes it. Linux also accepts
+**Ctrl-Y** for redo. In text mode, use Neovim's normal clipboard registers.
+
+A Copy button on a focused, secure web page can write to the system clipboard
+when you activate it. For example, use GitHub’s **Code → Copy** button and paste
+the clone URL into an editor.
 
 ### Browser DevTools
 
@@ -143,6 +158,8 @@ Use the platform CA store for corporate server trust. See
 [private CA setup](docs/browser/private-ca.md) for macOS Keychain and Linux NSS
 import, removal, persistence and troubleshooting. Trust applies across Jusi
 profiles; Chrome-only certificate settings may require a separate import.
+
+In browser text mode, press `'` to label visible text, then type a label to jump to that exact position. Each scrollable region gets priority, followed by headings and table cells, then other text blocks. Existing lowercase marks keep their usual jumps. Escape cancels.
 
 Press **Ctrl-P** in a browser buffer (text or rich mode) to pause/resume automatic text building. `:JusiWebTogglePause` provides the same toggle; explicit `:JusiWebPause` and `:JusiWebResume` remain available.
 

@@ -6,7 +6,7 @@ export function documentChangesSource(): string {
       let quietTimer, batchTimer, dirty = false;
       const owned = node => {
         const element = node.nodeType === 1 ? node : node.parentElement;
-        return !!element?.closest?.('#jusi-neovim-mirror-overlay, #jusi-neovim-web-mode-frame, #jusi-neovim-pointer-visibility');
+        return !!element?.closest?.('#jusi-neovim-mirror-overlay, #jusi-neovim-web-mode-frame, #jusi-neovim-pointer-visibility, #jusi-neovim-mark-hints');
       };
       const excluded = node => {
         const element = node.nodeType === 1 ? node : node.parentElement;
@@ -20,6 +20,7 @@ export function documentChangesSource(): string {
       };
       const changed = () => {
         window.__jusiTextJobId = (window.__jusiTextJobId || 0) + 1;
+        document.getElementById('jusi-neovim-mark-hints')?.dismiss?.();
         window.__jusiMirrorIndexMap = [];
         document.getElementById('jusi-neovim-mirror-overlay')?.remove();
         if (!dirty) { dirty = true; batchTimer = setTimeout(flush, 1500); }

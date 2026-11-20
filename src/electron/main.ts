@@ -9,7 +9,8 @@ import { BrowserModeKeys } from '../backends/web/mode-keys.js';
 import { NativePopupCoordinator } from "./native-popups.js";
 import { NativeViewportExchange, nativeLayoutKey } from "./native-viewport.js";
 import { browserLinkUrl, installBrowserLinks } from "./browser-links.js";
-import { browserIndex } from "../backends/web/interaction.js";
+import { markHintsSource } from "../backends/web/mark-hints.js";
+import { browserIndex, browserPosition } from "../backends/web/interaction.js";
 import { mirrorLinkTargetSource } from "../backends/web/document-scripts.js";
 import { browserPartition } from "../backends/web/partition.js";
 import { BrowserProfiles, type ProfileAction } from "./browser-profiles.js";
@@ -286,6 +287,7 @@ async function createWindow(): Promise<void> {
   }
   const win = new BrowserWindow({
     title: appDisplayName,
+    show: false,
     icon: appIcon(),
     width: 1200,
     height: 800,
@@ -345,6 +347,12 @@ async function createWindow(): Promise<void> {
       .then(message => ({ ok: true, message }), error => ({ ok: false, message: String(error) }))
       .then(profileFeedback);
   });
+  // Fetch the local shell and renderer module graph while Neovim initializes.
+  // The renderer boots only once its host IPC handlers are installed.
+  const shellLoad = win.loadFile(rendererHtml(), { query: rendererQuery() });
+  // Setup can outlive a failed navigation. Observe failure immediately and
+  // propagate it at the startup barrier below.
+  void shellLoad.catch(() => {});
   const browserApiInfo = await client.request("nvim_get_api_info", []);
   const browserChannel = Array.isArray(browserApiInfo) ? Number(browserApiInfo[0]) : 0;
   if (!Number.isSafeInteger(browserChannel) || browserChannel <= 0) throw new Error("Browser RPC channel unavailable");
@@ -352,7 +360,7 @@ async function createWindow(): Promise<void> {
   const profileNames = new WeakMap<object, string>();
   const linkControllers = new Map<number, ReturnType<typeof installBrowserLinks>>();
   let nativePopups: NativePopupCoordinator | undefined;
-  const popupControllers = new Map<number, { arm(scope: string): boolean; resetInput(): void }>();
+  const popupControllers = new Map<number, { arm(scope: string, documentGrant?: boolean): boolean; resetInput(): void }>();
   const localSessions = new WeakSet<object>();
   win.webContents.on("will-attach-webview", (event, preferences, params) => {
     const partition = typeof params.partition === "string" ? params.partition : "";
@@ -751,6 +759,31 @@ async function createWindow(): Promise<void> {
     await nativePopups.start();
     win.on("close", () => { browserEvents.fullscreen.dispose(); nativePopups?.dispose(); });
   }
+  client.onRequest(request => {
+    if (request.method !== 'jusi:mark-hints') return undefined;
+    const [ticket, win, token, letters, choice] = request.args as [DocumentTicket, number, string, string, string?];
+    const currentMirror = () => {
+      const snapshot = session.getSnapshot();
+      const view = session.getWebSession(ticket.bufferId);
+      if (snapshot.tabs.find(tab => tab.id === snapshot.currentTabId)?.currentWindowId === win
+        && view?.attachedWindowId === win && view.sessionId === ticket.sessionId
+        && view.incarnation === ticket.incarnation && view.mirror?.version === ticket.revision) return view.mirror;
+    };
+    const mirror = currentMirror();
+    if (!mirror || !/^[a-z]{0,26}$/.test(letters)) return false;
+    const contents = nativePopups?.contentsFor(ticket.bufferId) ?? [...guests.values()].find(g =>
+      g.bufferId === ticket.bufferId && g.sessionId === ticket.sessionId)?.contents;
+    if (!contents || contents.isDestroyed()) return false;
+    // Let Neovim continue even if a page's renderer stops responding.
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), 700); });
+    return Promise.race([timeout, contents.executeJavaScript(markHintsSource(token, letters, choice))])
+      .then(value => {
+        if (currentMirror() !== mirror) return false;
+        if (choice === undefined) return typeof value === 'string' && value.length && letters.startsWith(value) ? value : false;
+        return typeof value === 'number' ? browserPosition(mirror, value) : false;
+      }).catch(() => false).finally(() => clearTimeout(timer));
+  });
   client.onNotification(notification => {
     if (notification.method !== 'jusi:browser-command') return;
     const request = notification.args[0] as {bufferId: number;windowId: number;incarnation: number;action: string};
@@ -791,16 +824,17 @@ async function createWindow(): Promise<void> {
       return;
     }
     if (request.action === 'pause' || request.action === 'resume') session.setBrowserAutoRefresh(current.bufferId, request.action === 'resume');
-    if (current.nativeChild) {
-      const ok = nativePopups?.browserAction(current.bufferId,request.action);
-      if (request.action === 'allow-popup') void profileFeedback({ok:!!ok,message:ok?'One popup allowed for 15 seconds. Repeat the page action.':'Popup unavailable.'});
+    if (request.action === 'allow-popup' || request.action === 'allow-page-popups') {
+      const documentGrant = request.action === 'allow-page-popups';
+      const ok = current.nativeChild ? nativePopups?.browserAction(current.bufferId, request.action)
+        : popupControllers.get(contents.id)?.arm(current.privateBrowsing ? 'Private' : `Profile ${current.profile ?? 'default'}`, documentGrant);
+      const message = documentGrant ? 'Popups allowed while this page is focused until reload or navigation.'
+        : 'One popup allowed for 15 seconds. Repeat the page action.';
+      void profileFeedback({ok: !!ok, message: ok ? message : 'Popup unavailable.'});
       return;
     }
-    if (request.action === 'refresh') win.webContents.send('jusi:browser-refresh',target);
-    if (request.action === 'allow-popup') {
-      const ok=popupControllers.get(contents.id)?.arm(current.privateBrowsing ? 'Private' : `Profile ${current.profile ?? 'default'}`);
-      void profileFeedback({ok:!!ok,message:ok?'One popup allowed for 15 seconds. Repeat the page action.':'Popup unavailable.'});
-    }
+    if (current.nativeChild) nativePopups?.browserAction(current.bufferId, request.action);
+    else if (request.action === 'refresh') win.webContents.send('jusi:browser-refresh',target);
   });
   ipcMain.handle('jusi:browser-text-status', async (event: unknown, bufferId: number, sessionId: string, guestId: number, status: string) => {
     assertShell(event);
@@ -1034,9 +1068,15 @@ async function createWindow(): Promise<void> {
     }
   });
 
-  await win.loadFile(rendererHtml(), {
-    query: rendererQuery(),
-  });
+  await shellLoad;
+  if (closing || win.isDestroyed()) return;
+  await win.webContents.executeJavaScript(`(async () => {
+    const renderer = await import(document.getElementById("renderer-module").href);
+    await renderer.boot();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  })()`);
+  if (closing || win.isDestroyed()) return;
+  win.show();
   const diagnostics = await win.webContents.executeJavaScript(`
     ({
       hasJusi: typeof window.jusi !== "undefined",
@@ -1055,7 +1095,9 @@ app.whenReady().then(async () => {
     await createWindow();
   } catch (error) {
     console.error("[create-window-failed]", error);
-    throw error;
+    dialog.showErrorBox("Jusi Neovim could not start", error instanceof Error ? error.message : String(error));
+    app.exit(1);
+    return;
   }
   app.on("activate", () => {
     // noop for now

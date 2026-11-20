@@ -36,9 +36,9 @@ with the measured performance limits recorded, without claiming A1 accepted.
 | --- | --- | --- |
 | A1 — Responsive automatic text | Isolated wrapped extraction improved ~5.4x; default automatic-publication/host timing and cancellation trials added ([evidence](ALPHA-TIMING.md)); Unicode remains slow | Measure navigation to rich paint and Neovim publication with automatic extraction; measure host-renderer stalls and real input delivery. Use 200k words, one huge wrapped node, and a Unicode sample, three runs each on the recorded machine. Exercise mutation and cancellation during work. Keep the 8 ms slice target and 50 ms host-stall gate explicit; diagnose misses. |
 | A2 — Reliable everyday workflow | Accepted 2026-10-12 for the scoped default adapter: combined source/package workflow passes navigation/reload/zoom, retained form input across modes/tabs/splits, editor ownership, failed-text retry, text off and close/reopen. Commands/logs in STATUS. | Keep regression coverage; real IME and manual input/layout acceptance remain A3/A5. |
-| A3 — Input and layout | Automated Unicode/cursor/selection, keyboard and basic focus evidence exists | Combined manual acceptance for typing, clipboard, rich/text transitions, scrolling, resize and supported zoom on the default adapter. Exercise one real OS IME composition workflow; fix interception or lost input. Record unsupported complex selection/layout cases explicitly. |
-| A4 — Reproducible local setup | README startup and package smoke exist | Verify local build/launch from documented prerequisites, normal config and clean mode, missing-Neovim/startup failure feedback, Jusi profile persistence across restart using disposable fixture data, and clean shutdown. Write one short alpha quickstart with exact supported behavior and limitations. |
-| A5 — Final alpha checkpoint | No alpha acceptance pass yet | On frozen code, required check/desktop/package suites pass; run one combined manual review including the deferred commands/cap queue. Record artifact/version, known issues and scope in an alpha handoff. No unresolved default-path blocker and no unsupported parity claims. |
+| A3 — Input and layout | Packaged macOS ABC dead-key input produced é; manual copy/paste produced éé. Trusted composition started; end event unconfirmed. See STATUS. | Combined manual acceptance for typing, clipboard, rich/text transitions, scrolling, resize and supported zoom on the default adapter. Exercise one real OS IME composition workflow; fix interception or lost input. Record unsupported complex selection/layout cases explicitly. |
+| A4 — Reproducible local setup | Accepted on macOS arm64. Production build, normal and clean launch, missing-executable dialog, cookie persistence, private isolation and shutdown verified. [Quickstart](../MACOS-QUICKSTART.md). | Complete for the local alpha scope. |
+| A5 — Final alpha checkpoint | Checkpoint attempted: check, full source smoke, default packaged smoke and everyday workflow passed. Packaged focus regressions remain; see STATUS. | On frozen code, required check/desktop/package suites pass; run one combined manual review including the deferred commands/cap queue. Record artifact/version, known issues and scope in an alpha handoff. No unresolved default-path blocker and no unsupported parity claims. |
 
 A1 timings must distinguish guest work, main-process work, host-renderer stalls,
 and Neovim publication. Do not substitute isolated guest timers for host UI evidence
@@ -60,7 +60,6 @@ of this alpha does not mark M1–M6 complete or change R5's blocked-release stat
 Further performance optimization is deferred by user direction (2026-10-12).
 Keep the Unicode initial-paint/publication cost and unverified strict slice budget
 visible in A1; do not block everyday-workflow and setup acceptance on tuning.
-A2 automated acceptance is complete. Next verify A4 local setup/restart and write the
-alpha quickstart. Schedule A3 input/layout and real IME acceptance with the A5
+A2 automated acceptance is complete. A4 setup/restart is accepted. Schedule A3 input/layout and real IME acceptance with the A5
 combined manual checkpoint. A1 still needs an explicit disposition before the
 alpha is declared accepted.

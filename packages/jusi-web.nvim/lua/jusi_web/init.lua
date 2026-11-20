@@ -73,9 +73,12 @@ function M.setup(opts)
         vim.rpcnotify(channel, "jusi:browser-profile", { profile = command.args, action = action })
       end, { nargs = 1 })
     end
-    for name, action in pairs({JusiWebDebugMark="debug-mark", JusiWebTogglePause="toggle-pause", JusiWebDevTools="devtools", JusiWebPause="pause", JusiWebResume="resume", JusiWebRefresh="refresh", JusiWebAllowPopup="allow-popup"}) do
+    for name, action in pairs({JusiWebDebugMark="debug-mark", JusiWebTogglePause="toggle-pause", JusiWebDevTools="devtools", JusiWebPause="pause", JusiWebResume="resume", JusiWebRefresh="refresh"}) do
       vim.api.nvim_create_user_command(name, function() require("jusi_neovim.browser").command(action) end, {})
     end
+    vim.api.nvim_create_user_command("JusiWebAllowPopup", function(command)
+      require("jusi_neovim.browser").command(command.bang and "allow-page-popups" or "allow-popup")
+    end, { bang = true })
     configured = true
   end
   settings = vim.deepcopy(next_settings)

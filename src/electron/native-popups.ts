@@ -20,7 +20,7 @@ import type { EmbeddedNvimSession, NvimRpcClient } from '../bridge/rpc-session.j
 import type { NativePopupControl } from '../renderer/contracts.js';
 
 type Child = { view: WebContentsView; contents: any; binding?: NativeChildBinding;
-  scope: string; popup?: {arm(scope: string): boolean;resetInput(): void}; pending?: NativePopupControl; visible: boolean; inputSequence: number; text?: BrowserDocumentController; ready: boolean; focusWindow?: number; mode: 'rich' | 'text' };
+  scope: string; popup?: {arm(scope: string, documentGrant?: boolean): boolean;resetInput(): void}; pending?: NativePopupControl; visible: boolean; inputSequence: number; text?: BrowserDocumentController; ready: boolean; focusWindow?: number; mode: 'rich' | 'text' };
 
 /** Browser child integration. Native documents never receive the shell preload. */
 export class NativePopupCoordinator {
@@ -39,13 +39,18 @@ export class NativePopupCoordinator {
     const reset = () => { permit.reset(); if (active && !active.contents.isDestroyed()) active.contents.close(); };
     source.on('destroyed', reset);
     source.on('render-process-gone', reset);
-    source.on('did-start-navigation', (_e: unknown, _url: string, inPlace: boolean, main: boolean) => { if (main && !inPlace) reset(); });
+    source.on('did-start-navigation', (event: { isMainFrame: boolean; isSameDocument: boolean }) => {
+      if (event.isMainFrame && !event.isSameDocument) reset();
+    });
+    source.on('did-navigate', () => permit.reset());
     source.setWindowOpenHandler((details: any) => {
       const parent = identity();
       trace('popup.request', {url:traceBrowserUrl(details.url),disposition:details.disposition});
-      if (local || !parent || active || !permit.take(details.url)) {
+      const foreground = this.host.isFocused() && source.isFocused() && details.disposition !== 'background-tab';
+      const allowed = permit.take(details.url, foreground);
+      if (local || !parent || active || !allowed) {
         trace('popup.denied');
-        permit.reset(); this.feedback('Popup blocked. Use :JusiWebAllowPopup and repeat the page action.');
+        this.feedback('Popup blocked. Use :JusiWebAllowPopup for one open or :JusiWebAllowPopup! for this page.');
         return { action: 'deny' };
       }
       trace('popup.allowed');
@@ -60,7 +65,12 @@ export class NativePopupCoordinator {
           secureGuest(contents, false);
           view.setVisible(false);
           const child: Child = { view, contents, scope, visible: false, inputSequence: 0, ready: false, mode: 'rich' };
-          const publishLocation = observeBrowserLocation(contents, () => child.binding,
+          const identity = (): NativeOwnerIdentity | undefined => {
+            if (!child.binding) return undefined;
+            const {bufferId, sessionId, incarnation} = child.binding;
+            return {bufferId, sessionId, incarnation};
+          };
+          const publishLocation = observeBrowserLocation(contents, identity,
             (identity, url) => this.session.setBrowserLocation(identity, url), error => this.feedback(`Browser URL update failed: ${String(error)}`));
           active = child;
           this.children.add(child);
@@ -121,8 +131,8 @@ export class NativePopupCoordinator {
             child.binding = binding;
             publishLocation();
             // Nested opens use the same policy and exact bound source identity.
-            const events = this.events.install(contents, () => child.binding, false);
-            child.popup = { resetInput: events.resetInput, arm: this.installOpener(contents, () => child.binding, false, events.trace) };
+            const events = this.events.install(contents, identity, false);
+            child.popup = { resetInput: events.resetInput, arm: this.installOpener(contents, identity, false, events.trace) };
             child.text = nativeBrowserDocument(binding, contents, this.session,
               this.session.getWebSession(binding.bufferId)?.textLayer !== 'off', () => this.refresh(false));
             if (child.ready) child.text.loaded();
@@ -132,9 +142,9 @@ export class NativePopupCoordinator {
           return contents;
         } };
     });
-    return (label: string) => {
+    return (label: string, documentGrant = false) => {
       if (local || active || source.isDestroyed() || !identity()) return false;
-      scope = label; permit.arm(); return true;
+      scope = label; permit.arm(documentGrant); return true;
     };
   }
   contentsFor(bufferId: number): any | undefined { return [...this.children].find(child => child.binding?.bufferId === bufferId)?.contents; }
@@ -143,7 +153,8 @@ export class NativePopupCoordinator {
     if (!child || !child.binding) return false;
     if (action === 'refresh') void child.text?.rebuild();
     if (action === 'pause' || action === 'resume') child.text?.setAutoRefresh(action === 'resume');
-    if (action === 'allow-popup') return child.popup?.arm(child.scope) ?? false;
+    if (action === 'allow-popup' || action === 'allow-page-popups')
+      return child.popup?.arm(child.scope, action === 'allow-page-popups') ?? false;
     return true;
   }
   private async setMode(child: Child, mode: 'rich' | 'text', focus = false): Promise<void> {
@@ -303,7 +314,8 @@ export class NativePopupCoordinator {
   acknowledge(token: string, generation: number): boolean {
     for (const child of this.children) {
       if (child.pending?.token !== token || child.pending.generation !== generation || child.contents.isDestroyed()) continue;
-      child.view.setVisible(true); child.visible = true; this.restoreFocus(child); void this.project(child); return true;
+      if (!child.visible) child.view.setVisible(true);
+      child.visible = true; this.restoreFocus(child); void this.project(child); return true;
     }
     return false;
   }

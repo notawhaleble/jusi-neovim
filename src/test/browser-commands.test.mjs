@@ -41,8 +41,8 @@ assert.equal(dispatch({isDestroyed:()=>false},'toggle-pause',()=>{}),false);
 
 for (const platform of ['darwin','linux']) {
  const modifiers=platform==='darwin'?{meta:true,control:false}:{control:true,meta:false};
- for (const [code,action] of [['KeyC','copy'],['KeyX','cut'],['KeyV','paste']]) {
-  const input=key(code,modifiers);
+ for (const [code,action,shift=false] of [['KeyA','selectAll'],['KeyZ','undo'],['KeyZ','redo',true],['KeyC','copy'],['KeyX','cut'],['KeyV','paste']]) {
+  const input=key(code,{...modifiers,shift});
   assert.equal(command(input,platform),action);
   for (const extra of [{type:'keyUp'},{isComposing:true},{alt:true},{control:true,meta:true},{control:false,meta:false}])
    assert.equal(command({...input,...extra},platform),undefined);
@@ -53,6 +53,8 @@ for (const platform of ['darwin','linux']) {
   assert.equal(dispatch({...port,isDestroyed:()=>true},action,()=>{}),false);
   assert.equal(dispatch({...port,[action](){throw Error('closed');}},action,()=>{}),false);
  }
+ assert.equal(command(key('KeyY',modifiers),platform),platform==='linux'?'redo':undefined);
+ assert.equal(command(key('KeyA',{...modifiers,shift:true}),platform),undefined);
  assert.equal(command(key('KeyV',{...modifiers,shift:true}),platform),'pasteAndMatchStyle');
  assert.equal(command(key('KeyC',{...modifiers,shift:true}),platform),undefined);
  assert.equal(command(key('KeyX',{...modifiers,shift:true}),platform),undefined);

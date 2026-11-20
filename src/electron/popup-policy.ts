@@ -4,10 +4,15 @@ export function popupUrlAllowed(value: string): boolean {
 }
 export class PopupPermit {
   private deadline = 0;
+  private documentGrant = false;
   constructor(private readonly now: () => number = Date.now) {}
-  arm(): void { this.deadline = this.now() + 15000; }
-  reset(): void { this.deadline = 0; }
-  take(url: string): boolean {
+  arm(documentGrant = false): void {
+    this.documentGrant = documentGrant;
+    this.deadline = documentGrant ? 0 : this.now() + 15000;
+  }
+  reset(): void { this.deadline = 0; this.documentGrant = false; }
+  take(url: string, foreground = false): boolean {
+    if (this.documentGrant) return foreground && popupUrlAllowed(url);
     const active = this.deadline > this.now();
     this.reset();
     return active && popupUrlAllowed(url);

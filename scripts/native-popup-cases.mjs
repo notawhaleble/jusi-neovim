@@ -1,4 +1,4 @@
-import { browserInteractionCases, browserCommandCases, browserFocusCases } from './browser-interaction-cases.mjs';
+import { markHintCases, browserInteractionCases, browserCommandCases, browserFocusCases, browserReviewPause } from './browser-interaction-cases.mjs';
 import assert from 'node:assert/strict';
 import { BrowserWindow, webContents } from 'electron';
 import { createServer } from 'node:http';
@@ -14,7 +14,7 @@ export async function integratedNativePopupCases({ app, waitFor, evidence }) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const host = await waitFor(() => BrowserWindow.getAllWindows()[0]);
+  const host = await waitFor(() => BrowserWindow.getAllWindows().find(window => window.isVisible()));
   const js = code => host.webContents.executeJavaScript(code);
   const command = value => js(`window.jusi.runCommand(${JSON.stringify(value)})`);
   const bar = () => js(`!!document.querySelector('.native-popup-control')`);
@@ -23,6 +23,49 @@ export async function integratedNativePopupCases({ app, waitFor, evidence }) {
     await command(`JusiWebBuffer ${origin}`);
     const source = await waitFor(() => webContents.getAllWebContents().find(w => w.getType() === 'webview' && w.getURL() === origin + '/'));
     await waitFor(() => js(`document.querySelector('.presentation-text-status')?.dataset.status === 'ready'`));
+    if (process.env.JUSI_TEST_POPUP_GRANT_ONLY === '1') {
+      const verify = async opener => {
+        const request = () => opener.executeJavaScript(`window.open('${origin}/child') !== null`);
+        const focus = async () => {
+          host.focus();
+          await js("window.jusi.sendInput('i')");
+          await waitFor(() => opener.isFocused());
+        };
+        await command('lua require("jusi_web").last_profile_result=nil');
+        await command('JusiWebAllowPopup!');
+        await command("lua assert(vim.wait(3000,function() local r=require('jusi_web').last_profile_result; return r and r.ok and r.message:find('while this page is focused',1,true) end,20))");
+        await focus();
+        if (process.env.JUSI_TEST_REVIEW === 'page-popups') {
+          await opener.executeJavaScript(`document.body.insertAdjacentHTML('afterbegin', '<button id="copy-url">Copy URL</button><input id="review-url" aria-label="Paste URL" value="Replace me"><button id="review-open">Open popup</button>');
+            document.querySelector('#copy-url').onclick=()=>navigator.clipboard.writeText(location.href);
+            document.querySelector('#review-open').onclick=()=>window.open('/child'); void 0`);
+          await browserReviewPause('page-popups', host);
+        }
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const ids = new Set(webContents.getAllWebContents().map(w => w.id));
+          assert.equal(await request(), true);
+          const popup = await waitFor(() => webContents.getAllWebContents().find(w => !ids.has(w.id) && w.getURL() === origin+'/child'));
+          await waitFor(() => host.contentView.children.some(v => v.webContents?.id === popup.id && v.getVisible()));
+          assert.equal(popup.session, opener.session);
+          assert.equal(await request(), false, 'one active child per opener');
+          if (attempt === 1) return popup;
+          popup.close();
+          await waitFor(() => popup.isDestroyed());
+          await focus();
+        }
+      };
+      const popup = await verify(source);
+      const nested = await verify(popup);
+      nested.close();
+      await waitFor(() => nested.isDestroyed());
+      popup.reload();
+      await waitFor(() => popup.executeJavaScript('document.readyState === "complete"').catch(() => false));
+      popup.focus();
+      await waitFor(() => popup.isFocused());
+      assert.equal(await popup.executeJavaScript(`window.open('${origin}/child') === null`), true);
+      console.log('Page popup grant passed for webview and retained child, repeated opens, child limit and reload');
+      return;
+    }
     const open = async () => {
       assert.equal(await js(`(async () => { const v = (await window.jusi.getInitialState()).attachedWebViews.find(v => v.bufferId);
         return window.jusi.armBrowserPopup(v.bufferId, v.sessionId, ${source.id}); })()`), true);
@@ -35,6 +78,7 @@ export async function integratedNativePopupCases({ app, waitFor, evidence }) {
     await waitFor(() => view.getVisible());
     await waitFor(() => js(`document.querySelector('.native-popup-text-status')?.dataset.status === 'ready'`));
     await command(`lua assert(table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),' '):find('Floating browser popup',1,true))`);
+    if (process.env.JUSI_TEST_HINTS_ONLY === '1') { await markHintCases({host,guest:child,command,waitFor});return; }
     if (process.env.JUSI_TEST_POPUP_STABILITY === '1') {
       const setVisible = view.setVisible.bind(view);
       let hides = 0;
@@ -116,6 +160,7 @@ export async function integratedNativePopupCases({ app, waitFor, evidence }) {
       return;
     }
     if (process.env.JUSI_TEST_BROWSER_DUPLICATE_ONLY !== '1' && process.env.JUSI_TEST_BROWSER_MODIFIERS_ONLY !== '1') await browserCommandCases({host,guest:child,waitFor,statusSelector:'.native-popup-text-status'});
+    if (process.env.JUSI_TEST_EDITING_ONLY === '1') return;
     if (process.env.JUSI_TEST_BROWSER_WORKFLOW === '1') { const {browserWorkflowCases}=await import('./browser-workflow-cases.mjs');await browserWorkflowCases({host,guest:child,command,waitFor,statusSelector:'.native-popup-text-status',openDuplicate:async()=>{
       const existing=new Set(webContents.getAllWebContents().map(w=>w.id));
       await command('tabnew');await command(`JusiWebBuffer ${origin}`);

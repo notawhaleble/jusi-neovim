@@ -1,4 +1,4 @@
-import { browserInteractionCases, browserCommandCases } from './browser-interaction-cases.mjs';
+import { markHintCases, browserInteractionCases, browserCommandCases } from './browser-interaction-cases.mjs';
 import { integratedNativePopupCases } from "./native-popup-cases.mjs";
 import { adoptionCases } from "./adoption-cases.mjs";
 import { popupCases } from "./popup-cases.mjs";
@@ -96,6 +96,23 @@ try {
     writeFileSync(".local/review/adoption-sandbox.json", JSON.stringify(evidence, null, 2) + "\n");
     return;
   }
+  if (process.env.JUSI_TEST_STARTUP_ONLY === "1") {
+    const created = new Promise(resolve => app.once('browser-window-created', (_event, window) => resolve(window)));
+    await import("../dist/electron/main.js");
+    win = await created;
+    assert.equal(win.isVisible(), false, 'startup window starts hidden');
+    await new Promise(resolve => win.once('show', resolve));
+    const frame = await win.webContents.executeJavaScript(`({
+      background: document.documentElement.style.getPropertyValue('--bg'),
+      grids: document.querySelectorAll('.grid-layer').length
+    })`);
+    assert.ok(frame.background && frame.grids > 0, 'first visible frame has Neovim colors and grids');
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'I'});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'I'});
+    await waitFor(() => win.webContents.executeJavaScript("window.jusi.getInitialState().then(s => s.screen.mode.name === 'insert')"));
+    console.log('First visible frame had Neovim colors, grids and working keyboard input');
+    return;
+  }
   if (process.env.JUSI_TEST_ALPHA_TIMING === "1") {
     await import("../dist/electron/main.js");
     const { alphaTimingCases } = await import('./alpha-timing-cases.mjs');
@@ -115,14 +132,14 @@ try {
   await import("../dist/electron/main.js");
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.address().port}/`;
-  win = await waitFor(() => BrowserWindow.getAllWindows()[0]);
+  win = await waitFor(() => BrowserWindow.getAllWindows().find(window => window.isVisible()));
   await waitFor(() => win.webContents.executeJavaScript('typeof window.jusi === "object"').catch(() => false));
   const command = async value => win.webContents.executeJavaScript(`window.jusi.runCommand(${JSON.stringify(value)})`);
   if (process.env.JUSI_TEST_DISPLAY_ONLY === '1') {
     const { nvimDisplayCases } = await import('./nvim-display-cases.mjs');
     await nvimDisplayCases({win,command,waitFor});return;
   }
-  if (process.env.JUSI_TEST_BROWSER_WORKFLOW !== '1') {
+  if (process.env.JUSI_TEST_BROWSER_WORKFLOW !== '1' && process.env.JUSI_TEST_EDITING_ONLY !== '1' && process.env.JUSI_TEST_HINTS_ONLY !== '1') {
     const { nvimIntegrationCases } = await import('./nvim-integration-cases.mjs');
     await nvimIntegrationCases({win, command, waitFor});
     const { nvimMouseCases } = await import("./nvim-mouse-cases.mjs");
@@ -138,6 +155,11 @@ try {
   await status("ready");
   let guest = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL() === url);
   assert.ok(guest);
+  if (process.env.JUSI_TEST_HINTS_ONLY === '1') { await markHintCases({host:win,guest,command,waitFor});return; }
+  if (process.env.JUSI_TEST_EDITING_ONLY === '1') {
+    await win.webContents.executeJavaScript("window.jusi.sendInput('i')");
+    await browserCommandCases({host:win,guest,waitFor});return;
+  }
   if (process.env.JUSI_TEST_INTERACTION_ONLY === "1") {
     await browserInteractionCases({host:win,guest,command,waitFor,statusSelector:'.web-view-box:not(.web-view-box--parked) .presentation-text-status'});return;
   }

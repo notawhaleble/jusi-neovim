@@ -409,6 +409,7 @@ function M.apply_web_buffer_maps(bufnr)
     silent = true,
   })
   if vim.b[bufnr].jusi_provider_id == "web" then
+    vim.keymap.set("n", "'", require("jusi_neovim.mark_hints").jump, {buffer=bufnr, silent=true})
     vim.keymap.set("n", "<C-p>", function() require("jusi_neovim.browser").command("toggle-pause") end, {buffer=bufnr,silent=true,desc="Pause/resume browser text"})
   end
   vim.keymap.set("n", "<C-n>", function() require("jusi_neovim.browser").command("new-tab") end, {buffer=bufnr,silent=true})

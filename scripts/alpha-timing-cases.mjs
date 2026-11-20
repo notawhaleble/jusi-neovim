@@ -13,7 +13,7 @@ export async function alphaTimingCases({waitFor}) {
   const server=createServer((req,res)=>{res.setHeader('Content-Type','text/html; charset=utf-8');res.end(pages.get(req.url)||'<!doctype html><input>');});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const origin=`http://127.0.0.1:${server.address().port}`;
-  const host=await waitFor(()=>BrowserWindow.getAllWindows()[0]);
+  const host=await waitFor(()=>BrowserWindow.getAllWindows().find(window => window.isVisible()));
   const js=code=>host.webContents.executeJavaScript(code);
   const command=value=>js(`window.jusi.runCommand(${JSON.stringify(value)})`);
   const ready=()=>js(`document.querySelector('.web-view-box:not(.web-view-box--parked) .presentation-text-status')?.dataset.status`);

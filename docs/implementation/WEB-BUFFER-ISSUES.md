@@ -83,7 +83,10 @@ Restore the appropriate undecorated local/global user format when leaving browse
 buffers. Preserve custom formats and independent window settings. Test both shared
 browser adapters without introducing adapter-specific status formatting.
 
-## W4 — YouTube fullscreen does not work
+## W4 — YouTube fullscreen
+
+2026-11-18: user reports fullscreen works smoothly in daily use. Closed for
+daily-use triage; retain automated coverage. Earlier evidence follows.
 
 Implemented and verified on macOS in both adapters (ADR 0044). Shared permission/
 ownership and exit lifecycle, native full-host bounds, prior-window-state restoration

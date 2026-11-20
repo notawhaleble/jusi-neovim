@@ -36,6 +36,7 @@ await import("./browser-document.test.mjs");
 await import('./browser-mode-keys.test.mjs');
 
 await import('./browser-commands.test.mjs');
+await import("./browser-clipboard.test.mjs");
 
 await import('./extraction-limits.test.mjs');
 

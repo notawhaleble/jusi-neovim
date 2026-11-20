@@ -7,8 +7,9 @@ const appName = "Jusi Neovim";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const entry = join(root, "dist", "electron", "main.js");
 
-function run(command, args) {
-  const child = spawn(command, args, {
+function run(command) {
+  const devProfile = join(root, ".local", "electron-dev-profile");
+  const child = spawn(command, [entry, `--user-data-dir=${devProfile}`], {
     cwd: root,
     env: process.env,
     stdio: "inherit",
@@ -50,7 +51,7 @@ if (process.platform === "darwin") {
     throw new Error("Local Electron.app is missing. Run `npm install --include=dev` first.");
   }
   patchPlist(join(electronApp, "Contents", "Info.plist"));
-  run(electronBin, [entry]);
+  run(electronBin);
 } else {
-  run(join(root, "node_modules", ".bin", process.platform === "win32" ? "electron.cmd" : "electron"), [entry]);
+  run(join(root, "node_modules", ".bin", process.platform === "win32" ? "electron.cmd" : "electron"));
 }

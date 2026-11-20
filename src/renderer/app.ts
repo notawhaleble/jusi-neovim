@@ -1998,7 +1998,7 @@ function installPointerVisibility(): void {
   window.addEventListener("wheel", showPointer);
 }
 
-async function boot(): Promise<void> {
+export async function boot(): Promise<void> {
   applyTerminalFontSize(loadTerminalFontSize(), false);
   const initial = await window.jusi.getInitialState();
   renderState(initial);
@@ -2090,7 +2090,6 @@ window.jusi.onWebOpenLink((event) => {
   });
 }
 
-void boot();
 
 // Input restarts the initial visible interval, even when the cursor does not move.
 window.addEventListener('keydown', () => {

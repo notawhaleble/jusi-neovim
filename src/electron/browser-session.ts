@@ -1,6 +1,7 @@
 import { allowBrowserFullscreen } from './browser-fullscreen.js';
 import { browserNavigationSource } from '../backends/web/navigation.js';
 import { MediaPermissions } from "./media-permissions.js";
+import { allowClipboardWrite } from "./browser-clipboard.js";
 import { dialog } from "electron";
 import { isGuestNavigationAllowed } from "./browser-policy.js";
 
@@ -11,7 +12,7 @@ export function browserPermissions(session: any): MediaPermissions {
   return permissions;
 }
 
-/** Request and check handlers must agree. Grants last only for this app session. */
+/** Media grants last only for this app session. Clipboard requests are evaluated individually. */
 export function configureBrowserSession(session: any, local: boolean): void {
   if (configured.has(session)) return;
   const permissions = new MediaPermissions(async (site, types) => {
@@ -28,6 +29,9 @@ export function configureBrowserSession(session: any, local: boolean): void {
   session.setPermissionRequestHandler((contents: any, permission: string, callback: (allowed: boolean) => void, details: any) => {
     if (permission === 'fullscreen') { callback(allowBrowserFullscreen(contents, true)); return; }
     if (local) { callback(false); return; }
+    if (permission === 'clipboard-sanitized-write') {
+      void allowClipboardWrite(contents, details).then(callback, () => callback(false)); return;
+    }
     void permissions.request(contents, permission, details).then(callback, () => callback(false));
   });
   // Local files never share cookies or permissions with network browsing and cannot exfiltrate files.

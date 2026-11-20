@@ -19,7 +19,7 @@ async function waitFor(fn) {
 async function main() {
 try {
   await import('../dist/electron/main.js');
-  const win = await waitFor(() => BrowserWindow.getAllWindows()[0]);
+  const win = await waitFor(() => BrowserWindow.getAllWindows().find(window => window.isVisible()));
   await waitFor(() => win.webContents.executeJavaScript('typeof window.jusi === "object"').catch(() => false));
   const command = value => win.webContents.executeJavaScript(`window.jusi.runCommand(${JSON.stringify(value)})`);
   async function open(profile, privateMode = false) {

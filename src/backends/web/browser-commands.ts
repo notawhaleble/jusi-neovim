@@ -1,7 +1,8 @@
 import type { BrowserKeyInput } from './mode-keys.js';
 export type ZoomAction = 'in' | 'out' | 'reset';
 export type ClipboardCommand = 'copy' | 'cut' | 'paste' | 'pasteAndMatchStyle';
-export type BrowserCommand = ClipboardCommand | 'toggle-pause' | 'devtools' | 'copy-url' | 'reload' | 'back' | 'forward' | `zoom-${ZoomAction}`;
+type EditingCommand = ClipboardCommand | 'selectAll' | 'undo' | 'redo';
+export type BrowserCommand = EditingCommand | 'toggle-pause' | 'devtools' | 'copy-url' | 'reload' | 'back' | 'forward' | `zoom-${ZoomAction}`;
 export function zoomActionForInput(input: BrowserKeyInput): ZoomAction | null {
   if (input.type !== 'keyDown' || input.isComposing || input.alt || (!input.meta && !input.control)) return null;
   if (['+', '='].includes(input.key ?? '') || ['Equal', 'NumpadAdd'].includes(input.code ?? '')) return 'in';
@@ -13,6 +14,9 @@ export function browserCommandForInput(input: BrowserKeyInput, platform?: string
   if (input.type !== 'keyDown' || input.isComposing || input.alt) return;
   const primary = platform === 'darwin' ? input.meta && !input.control : input.control && !input.meta;
   if (primary) {
+    if (input.code === 'KeyA' && !input.shift) return 'selectAll';
+    if (input.code === 'KeyZ') return input.shift ? 'redo' : 'undo';
+    if (platform === 'linux' && input.code === 'KeyY' && !input.shift) return 'redo';
     if (input.code === 'KeyC' && !input.shift) return 'copy';
     if (input.code === 'KeyX' && !input.shift) return 'cut';
     if (input.code === 'KeyV') return input.shift ? 'pasteAndMatchStyle' : 'paste';
@@ -30,6 +34,9 @@ export function browserCommandForInput(input: BrowserKeyInput, platform?: string
 export interface BrowserCommandPort {
   isDestroyed(): boolean;
   reload?(): void;
+  selectAll?(): void;
+  undo?(): void;
+  redo?(): void;
   copy?(): void;
   cut?(): void;
   paste?(): void;
@@ -46,11 +53,19 @@ export interface BrowserCommandPort {
 export function dispatchBrowserCommand(port: BrowserCommandPort, command: BrowserCommand, zoomed: () => void, copyUrl?: (url: string) => void): boolean {
   if (port.isDestroyed()) return false;
   try {
-    if (command === 'copy' || command === 'cut' || command === 'paste' || command === 'pasteAndMatchStyle') {
-      const action = port[command];
-      if (!action) return false;
-      action.call(port);
-      return true;
+    switch (command) {
+      case 'selectAll':
+      case 'undo':
+      case 'redo':
+      case 'copy':
+      case 'cut':
+      case 'paste':
+      case 'pasteAndMatchStyle': {
+        const action = port[command];
+        if (!action) return false;
+        action.call(port);
+        return true;
+      }
     }
     if (command === 'toggle-pause') return false; // Routed through authoritative Neovim state.
     if (command === 'devtools') {
