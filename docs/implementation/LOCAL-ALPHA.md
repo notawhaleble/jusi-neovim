@@ -38,7 +38,7 @@ with the measured performance limits recorded, without claiming A1 accepted.
 | A2 — Reliable everyday workflow | Accepted 2026-10-12 for the scoped default adapter: combined source/package workflow passes navigation/reload/zoom, retained form input across modes/tabs/splits, editor ownership, failed-text retry, text off and close/reopen. Commands/logs in STATUS. | Keep regression coverage; real IME and manual input/layout acceptance remain A3/A5. |
 | A3 — Input and layout | Accepted for local alpha. The user completed the suggested manual workflows in a development instance. Packaged macOS ABC dead-key composition and clipboard have separate evidence in STATUS. | Candidate-based IME remains unverified. |
 | A4 — Reproducible local setup | Accepted on macOS arm64. Production build, normal and clean launch, missing-executable dialog, cookie persistence, private isolation and shutdown verified. [Quickstart](../MACOS-QUICKSTART.md). | Complete for the local alpha scope. |
-| A5 — Final alpha checkpoint | Manual review complete by user acceptance on a development instance. Packaged native focus and both browser workflows passed after the focused rerun. | Run the final automated suites on frozen code and record artifact, scope and known issues. |
+| A5 — Final alpha checkpoint | Accepted for the scoped macOS arm64 checkpoint on 2026-11-20. User manual review, source checks and the complete packaged suite passed. See STATUS for the artifact and logs. | Complete. |
 
 A1 timings must distinguish guest work, main-process work, host-renderer stalls,
 and Neovim publication. Do not substitute isolated guest timers for host UI evidence
@@ -60,5 +60,5 @@ of this alpha does not mark M1–M6 complete or change R5's blocked-release stat
 Further performance optimization is deferred by user direction (2026-10-12).
 Keep the Unicode initial-paint/publication cost and unverified strict slice budget
 visible in A1; do not block everyday-workflow and setup acceptance on tuning.
-A2 automated acceptance is complete. A4 setup/restart is accepted. A3 and the A5 manual review are accepted. The A5 automated checkpoint remains. A1 still needs an explicit disposition before the
+A2 automated acceptance is complete. A4 setup/restart is accepted. A3 and A5 are accepted for the local alpha scope. A1 still needs an explicit disposition before the
 alpha is declared accepted.

@@ -1,3 +1,31 @@
+# Local alpha A5 accepted on macOS arm64, 2026-11-20
+
+Release handoff for Jusi Neovim 0.1.0, Electron 44.5.0, Node 24, macOS arm64.
+Production source at 6046d04; subsequent changes cover the workflow fixture and
+acceptance record. Packaged test artifact under
+`.local/review/packaged-smoke/build/mac-arm64/Jusi Neovim.app`. Manual input and
+layout review was accepted on the development instance. User confirmed Linux
+microphone and camera access separately. Candidate-based IME and the A1 Unicode
+performance/slice budget remain open. Linux desktop conformance and security
+parity are outside this checkpoint.
+
+The packaged native trace reproduced the tab timeout on the first modified
+click. Electron observed a complete press/release, but the isolated collector
+returned no matching click after history navigation (link-diagnosis.log).
+The test now waits for the link's paint frames, checks the hit target, and
+sends the gesture to the visible, focused guest. It verifies the newly created
+WebContents and the Neovim tab count. After a tab closes it re-enters the
+browser through the normal mapping. No production input handling changed.
+
+Node 24 verification under .local/review/: focused traced native workflow passed
+(link-focused.log). npm run check and npm run smoke:electron exited 0
+(alpha5-final.log). The first package run exited 1 at DOM guest focus in the
+second gesture. After correcting re-entry, both packaged workflows passed
+(link-package-focused.log) and the complete npm run smoke:package exited 0
+(alpha5-package-final.log). Harness and git diff --check passed at handoff.
+Next decision is whether to accept the measured A1 limits for the local alpha
+or reopen performance tuning.
+
 # Linux x86-64 media-permissions test release, 2026-11-20
 
 Uploaded the portable tar.gz, SHA-256 file and dated installation notes to the

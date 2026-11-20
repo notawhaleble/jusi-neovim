@@ -485,19 +485,36 @@ export async function browserWorkflowCases({host,guest,command:runCommand,waitFo
   await waitFor(()=>guest.getURL()===next);await ready();
   // Real modified click opens a foreground Neovim link tab.
   await guest.executeJavaScript(`const a=document.createElement('a');a.href=${JSON.stringify(url)};a.textContent='Modified link';a.style='position:fixed;top:30px;left:30px;z-index:999999';a.id='modified-link';document.body.prepend(a)`);
-  const point=await guest.executeJavaScript(`(()=>{const r=document.querySelector('#modified-link').getBoundingClientRect();return {x:Math.round(r.left+5),y:Math.round(r.top+5)}})()`);
-  await ready();guest.focus();await waitFor(()=>guest.executeJavaScript('document.hasFocus()'));
+  await ready();
   for (const modifier of ['meta','control']) {
-  guest.sendInputEvent({type:'keyDown',keyCode:modifier==='meta'?'Meta':'Control',modifiers:[modifier]});
-  guest.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point,modifiers:[modifier]});
-  guest.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point,modifiers:[modifier]});
-  guest.sendInputEvent({type:'keyUp',keyCode:modifier==='meta'?'Meta':'Control'});
-  await command('lua assert(vim.wait(5000,function() return #vim.api.nvim_list_tabpages()==vim.g.workflow_tabs+1 end,20))');
-  const tabChild=await waitFor(()=>webContents.getAllWebContents().find(c=>c.id!==guest.id && c.getType()==='webview' && c.getURL()===url));
-  assert.equal(BrowserWindow.getAllWindows().length,1);
-  await command('JusiClose');await waitFor(()=>tabChild.isDestroyed());
-  await command('lua assert(vim.api.nvim_get_current_buf()==vim.g.workflow_source_buf)');
-  guest.focus();
+    const previous = new Set(webContents.getAllWebContents().map(contents=>contents.id));
+    // Closing the preceding tab returns input to Neovim. Enter the original
+    // browser buffer through its normal mapping before the next gesture.
+    await ready();
+    await js("window.jusi.sendInput('i')");
+    await waitFor(()=>guest.executeJavaScript('document.hasFocus()'));
+    // A history commit and a ready text mirror can precede the first painted
+    // frame. Wait for the actual click target to reach the compositor.
+    const point = await guest.executeJavaScript(`new Promise(resolve=>requestAnimationFrame(()=>
+      requestAnimationFrame(()=>{
+        const link=document.querySelector('#modified-link');
+        const rect=link.getBoundingClientRect(), x=Math.round(rect.left+5), y=Math.round(rect.top+5);
+        resolve(document.elementFromPoint(x,y)===link ? {x,y} : null);
+      })))`);
+    assert.ok(point, 'modified link must be visible at the click position');
+    const keyCode = modifier==='meta' ? 'Meta' : 'Control';
+    await deliverGuestInput({host,guest,waitFor},[
+      {type:'keyDown',keyCode,modifiers:[modifier]},
+      {type:'mouseDown',button:'left',clickCount:1,...point,modifiers:[modifier]},
+      {type:'mouseUp',button:'left',clickCount:1,...point,modifiers:[modifier]},
+      {type:'keyUp',keyCode},
+    ]);
+    const tabChild = await waitFor(()=>webContents.getAllWebContents().find(c=>
+      !previous.has(c.id) && c.getType()==='webview' && c.getURL()===url));
+    await command('lua assert(#vim.api.nvim_list_tabpages()==vim.g.workflow_tabs+1)');
+    assert.equal(BrowserWindow.getAllWindows().length,1);
+    await command('JusiClose');await waitFor(()=>tabChild.isDestroyed());
+    await command('lua assert(vim.api.nvim_get_current_buf()==vim.g.workflow_source_buf)');
   }
   // Text-mode Ctrl-N opens an independent tab; Ctrl-Q closes that presentation.
   await ready();
