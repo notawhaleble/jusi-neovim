@@ -29,6 +29,8 @@ export function mirrorExtractorSource(): string {
       let charCount = 0;
       let currentBlock = null;
       let currentParent = null;
+      let codeWhitespace = false;
+      const fileCellSelector = '.react-code-file-contents .react-code-lines [data-testid="code-cell"][data-line-number]';
       const styleCache = new WeakMap();
       window.__jusiTextStyles = new WeakMap();
       const lineHeight = (() => {
@@ -205,7 +207,7 @@ export function mirrorExtractorSource(): string {
         for (const current of chain) excludedAncestors.set(current, excluded);
         return excluded;
       };
-      const isTextNodeVisible = (node) => {
+      const isTextNodeVisible = (node, fileCell) => {
         if (!node || node.nodeType !== Node.TEXT_NODE || !node.parentElement) {
           return false;
         }
@@ -214,17 +216,22 @@ export function mirrorExtractorSource(): string {
         if (["SCRIPT","STYLE","NOSCRIPT","TEMPLATE","INPUT","TEXTAREA","SELECT","OPTION"].includes(tag)) {
           return false;
         }
-        if (parent.closest && parent.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [aria-hidden="true"], #jusi-neovim-mirror-overlay, #jusi-neovim-web-mode-frame')) {
+        if (parent.closest && parent.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), #jusi-neovim-mirror-overlay, #jusi-neovim-web-mode-frame')) {
           return false;
         }
+        const hidden = parent.closest('[aria-hidden="true"]');
+        // GitHub renders the visible file and its line-number gutter in one
+        // presentation-only container. Admit just the rendered source cells.
+        if (hidden && (!fileCell || hidden !== fileCell.closest('.react-code-file-contents')
+          || hidden.parentElement?.closest('[aria-hidden="true"]'))) return false;
         const style = getStyle(parent);
         if (!style || style.display === "none" || style.visibility === "hidden") {
           return false;
         }
         return !visuallyExcluded(parent);
       };
-      const flushLine = (includeNewline = true, preserveEmpty = false) => {
-        while (currentLine.endsWith(" ")) {
+      const flushLine = (includeNewline = true, preserveEmpty = false, newline = null) => {
+        while (currentLine.endsWith(" ") && !indexMap[indexMap.length - 1]) {
           currentLine = currentLine.slice(0, -1);
           indexMap.pop();
         }
@@ -248,7 +255,7 @@ export function mirrorExtractorSource(): string {
         lastWasSpace = false;
         if (includeNewline) {
           if (indexMap.length >= 400000) throw new ExtractionLimit();
-          indexMap.push(null);
+          indexMap.push(newline);
         }
         currentLineStart = indexMap.length;
       };
@@ -306,10 +313,10 @@ export function mirrorExtractorSource(): string {
       };
       const pushToken = async (node, text, offsets, token) => {
         if (token.type === "newline") {
-          flushLine(true, true);
+          flushLine(true, true, codeWhitespace ? {node, offset: offsets[token.start]} : null);
           return;
         }
-        if (token.type === "space") {
+        if (token.type === "space" && !codeWhitespace) {
           pushSpaceRun(text.slice(token.start, token.end));
           return;
         }
@@ -346,7 +353,7 @@ export function mirrorExtractorSource(): string {
         for (let index = start; index < end; index++) {
           await yieldIfNeeded();
           const token = tokens[index];
-          if (token.type === "word") await pushMappedRun(node, text, offsets, token.start, token.end, rect);
+          if (token.type === "word" || (codeWhitespace && token.type === "space")) await pushMappedRun(node, text, offsets, token.start, token.end, rect);
           else await pushToken(node, text, offsets, token);
         }
       };
@@ -356,19 +363,21 @@ export function mirrorExtractorSource(): string {
       while (node) {
         if (++visited > 100000) throw new ExtractionLimit();
         await yieldIfNeeded();
-        if (!isTextNodeVisible(node)) { node = walker.nextNode(); continue; }
+        const fileCell = node.parentElement?.closest(fileCellSelector);
+        if (!isTextNodeVisible(node, fileCell)) { node = walker.nextNode(); continue; }
         const parent = node.parentElement;
-        const block = blockAncestor(node);
+        const style = getStyle(parent);
+        codeWhitespace = !!fileCell || (!!parent.closest('pre, code') && ['pre','pre-wrap','break-spaces'].includes(style.whiteSpace));
+        const block = fileCell || blockAncestor(node);
         if (currentBlock && block !== currentBlock && currentLine.length > 0) {
           flushLine();
         }
         currentBlock = block;
-        if (shouldSeparateInlineNodes(currentParent, parent)) {
+        if (!codeWhitespace && shouldSeparateInlineNodes(currentParent, parent)) {
           pushSyntheticSpace();
         }
         currentParent = parent;
-        const style = parent ? getStyle(parent) : null;
-        const normalized = await normalizeNodeText(node.nodeValue || "", style ? style.whiteSpace : "", style ? style.textTransform : "");
+        const normalized = await normalizeNodeText(node.nodeValue || "", fileCell ? "pre" : style.whiteSpace, style.textTransform);
         const tokens = tokenize(normalized.text);
         if (tokens.length) await pushTokens(node, normalized.text, normalized.offsets, tokens, 0, tokens.length);
         node = walker.nextNode();

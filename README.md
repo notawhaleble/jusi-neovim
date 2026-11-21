@@ -161,7 +161,9 @@ Use the platform CA store for corporate server trust. See
 import, removal, persistence and troubleshooting. Trust applies across Jusi
 profiles; Chrome-only certificate settings may require a separate import.
 
-In browser text mode, press `'` to label visible text, then type a label to jump to that exact position. Each scrollable region gets priority, followed by headings and table cells, then other text blocks. Existing lowercase marks keep their usual jumps. Escape cancels.
+Browser text mode includes rendered GitHub file contents and preformatted code blocks. Indentation, tabs and blank lines are preserved, so the Neovim cursor and visual selections can target the displayed code.
+
+In browser text mode, press `'` to label visible text, then type a label to jump to that exact position. Labels spread across visible text, including wrapped paragraphs and wide rows. Headings, table cells and separate scrollable regions get a slight preference. Existing lowercase marks keep their usual jumps. Escape cancels.
 
 Press **Ctrl-P** in a browser buffer (text or rich mode) to pause/resume automatic text building. `:JusiWebTogglePause` provides the same toggle; explicit `:JusiWebPause` and `:JusiWebResume` remain available.
 

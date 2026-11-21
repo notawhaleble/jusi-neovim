@@ -73,8 +73,71 @@ export async function markHintCases({host, guest, command, waitFor}) {
   await waitFor(()=>guest.executeJavaScript(`!!${overlay}`));
   await input('<Esc>');
   await waitFor(()=>guest.executeJavaScript(`!${overlay}`));
+  // More table cells than available letters precede one long wrapped text
+  // node. Both axes of the visible paragraph must still be reachable.
+  await guest.executeJavaScript(`(() => {
+    const section=document.querySelector('#hint-test');
+    section.innerHTML='<table style="font:12px monospace"><tbody></tbody></table><p style="font:16px/20px monospace;margin:0"></p>';
+    section.querySelector('tbody').innerHTML='<tr>'+Array.from({length:36},(_,i)=>'<td>'+i+'</td>').join('')+'</tr>';
+    section.querySelector('p').textContent='SpacingFixture '+ 'readable words '.repeat(650);
+    window.scrollTo(0,0);
+  })()`);
+  await command("lua assert(vim.wait(5000,function() return table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),' '):find('SpacingFixture',1,true) ~= nil end))");
+  await input("'");
+  await waitFor(()=>guest.executeJavaScript(`!!${overlay}`));
+  const coverage=await guest.executeJavaScript(`(() => {
+    const hints=${overlay}, corners=new Set();
+    for (const badge of hints.children) {
+      const node=window.__jusiMirrorIndexMap[hints.targets.get(badge.textContent)].node;
+      if (!node.parentElement.closest('#hint-test p')) continue;
+      const r=badge.getBoundingClientRect();
+      if ((r.x<innerWidth*.35 || r.x>innerWidth*.65) && (r.y<innerHeight*.4 || r.y>innerHeight*.65))
+        corners.add((r.x>innerWidth/2?'right':'left')+(r.y>innerHeight/2?'Bottom':'Top'));
+    }
+    return [...corners].sort();
+  })()`);
+  assert.deepEqual(coverage,['leftBottom','leftTop','rightBottom','rightTop']);
+  if (process.env.JUSI_TEST_HINT_SCREENSHOT === '1') {
+    writeFileSync('.local/review/mark-spacing.png',(await host.webContents.capturePage()).toPNG());
+  }
+  await browserReviewPause('mark-spacing',host);
+  await input('<Esc>');
+  await waitFor(()=>guest.executeJavaScript(`!${overlay}`));
   await guest.executeJavaScript("document.getElementById('hint-test').remove()");
-  console.log('Visible table hint, exact jump, existing mark and cancellation passed');
+  console.log('Visible table hint, exact jump, existing mark, cancellation and viewport coverage passed');
+}
+
+export async function codeProjectionCases({host, guest, command, waitFor}) {
+  if (guest.isFocused()) {
+    await deliverGuestInput({host,guest,waitFor},[
+      {type:'keyDown',keyCode:'\\',modifiers:['control']},
+      {type:'keyDown',keyCode:'N',modifiers:['control']},
+    ]);
+    await waitFor(()=>host.webContents.isFocused());
+  }
+  await guest.executeJavaScript(`(() => {
+    const section = document.createElement('section');
+    section.id='code-projection-fixture';
+    section.innerHTML='<div class="react-code-file-contents" role="presentation" aria-hidden="true"><div>ExcludedGutter</div><div class="react-code-lines" style="white-space:pre"></div></div><pre><code></code></pre><p>AfterCodeFixture</p>';
+    const rows = section.querySelector('.react-code-lines');
+    for (const html of ['<span>def</span> source():', '\\n', '    <span>return</span> <span>42</span>  <span aria-hidden="true">ExcludedIcon</span>']) {
+      const line=document.createElement('div');
+      line.dataset.testid='code-cell';line.dataset.lineNumber=String(rows.children.length+1);
+      line.innerHTML=html;rows.append(line);
+    }
+    section.querySelector('code').textContent='SnippetFixture\\n\\t  one  two\\n\\n  end';
+    document.body.prepend(section);window.scrollTo(0,0);
+  })()`);
+  await command(`lua local expected={'def source():','','    return 42  ','SnippetFixture','\t  one  two','','  end','AfterCodeFixture'}; assert(vim.wait(5000,function() return vim.deep_equal(vim.api.nvim_buf_get_lines(0,0,#expected,false),expected) end,20),'rendered source lines or whitespace differ'); vim.api.nvim_win_set_cursor(0,{3,2})`);
+  await waitFor(()=>guest.executeJavaScript(`(() => {
+    const node=document.querySelector('[data-testid="code-cell"][data-line-number="3"]').firstChild;
+    const range=document.createRange();range.setStart(node,2);range.setEnd(node,3);
+    const expected=range.getBoundingClientRect();
+    const caret=document.querySelector('#jusi-neovim-mirror-caret')?.getBoundingClientRect();
+    return caret && Math.abs(caret.left-expected.left)<2 && Math.abs(caret.top-expected.top)<2;
+  })()`));
+  await guest.executeJavaScript("document.querySelector('#code-projection-fixture').remove()");
+  console.log('Rendered source lines, indentation, blank lines and projected code cursor passed');
 }
 
 /** Same real command acceptance through either browser transport. */
@@ -82,6 +145,7 @@ export async function browserInteractionCases({ host, guest, command, waitFor, s
   if (process.env.JUSI_TEST_BROWSER_WORKFLOW === '1') { await browserWorkflowCases({host,guest,command,waitFor,statusSelector}); return; }
   const js = code => host.webContents.executeJavaScript(code);
   if (process.env.JUSI_TEST_READING_ONLY === '1') { await browserReadingCases({host,guest,command,waitFor,statusSelector}); return; }
+  await codeProjectionCases({host,guest,command,waitFor});
   await markHintCases({host,guest,command,waitFor});
   await browserTextLimitCases({host,guest,command,waitFor,statusSelector});
   await browserReadingCases({host,guest,command,waitFor,statusSelector});

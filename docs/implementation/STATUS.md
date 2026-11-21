@@ -1,3 +1,46 @@
+# Browser code projection, 2026-11-21
+
+The shared DOM extractor projects GitHub file-view source cells and preformatted
+code. Indentation and trailing whitespace retain DOM offsets across syntax spans.
+Blank source lines remain in the Neovim buffer. The file gutter, nested hidden
+annotations and editable controls remain excluded. Tested a live public GitHub
+Python file with 162 rendered rows in a disposable macOS dev session. Neovim
+contained successive import statements with their blank line, and its cursor
+projected onto the chosen file row. Other editor implementations, virtual rows
+outside the DOM and site-specific diff views have no dedicated acceptance.
+
+Node 24 checks under .local/review/: extraction limit/wrap regression tests
+passed (code-unit.log). The initial focused native fixture was in rich mode.
+After exiting via the real mode chord, both adapters passed the source/indentation
+and mapped-caret assertions in development and packaging (code-focused.log,
+code-final.log, code-package-focused.log). Live check passed (code-live.log).
+npm run check exited 0. Full desktop smoke initially failed at keyboardRedrawCases
+waiting for the first rendered row after scrolling, before any web buffer opened.
+That display-only workflow passed separately. Subsequent full source and package
+runs timed out during the Neovim overlay workflow; foregrounding the window did
+not resolve it. See code-desktop-final.log, code-active-final.log and
+code-package.log. The broader desktop checkpoint remains open for that failure.
+No deployment performed.
+
+# Visible mark spacing and local alpha timing disposition
+
+Apostrophe hints sample actual mapped characters on visible text lines. After
+the first target, selection favors the largest gaps, with a small preference for
+headings, cells and unrepresented scrollable regions. This allows one long
+paragraph to offer multiple jumps and keeps a dense row from using all letters.
+
+Node 24 on macOS arm64. Build and focused mark tests exited 0 for both adapters
+(spacing-focused.log). A 36-cell row followed by one long wrapped paragraph
+retained targets near all four viewport corners. Existing exact table-cell jump,
+user mark and cancellation cases passed. The captured default-adapter overlay
+was inspected (.local/review/mark-spacing.png). npm run check, npm run
+smoke:electron and npm run smoke:package all exited 0 (spacing-final.log under
+.local/review). No Linux desktop replay for this change.
+
+The user accepted current timing for the local alpha. A1 is closed with the
+measured Unicode delay and unverified slice target recorded in ALPHA-TIMING.md.
+A2–A5 were already accepted. The wider roadmap remains open.
+
 # Local alpha A5 accepted on macOS arm64, 2026-11-20
 
 Release handoff for Jusi Neovim 0.1.0, Electron 44.5.0, Node 24, macOS arm64.

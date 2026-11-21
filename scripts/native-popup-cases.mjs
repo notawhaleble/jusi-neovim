@@ -1,4 +1,4 @@
-import { mediaGrantCases, markHintCases, browserInteractionCases, browserCommandCases, browserFocusCases, browserReviewPause } from './browser-interaction-cases.mjs';
+import { codeProjectionCases, mediaGrantCases, markHintCases, browserInteractionCases, browserCommandCases, browserFocusCases, browserReviewPause } from './browser-interaction-cases.mjs';
 import assert from 'node:assert/strict';
 import { BrowserWindow, webContents } from 'electron';
 import { createServer } from 'node:http';
@@ -79,6 +79,7 @@ export async function integratedNativePopupCases({ app, waitFor, evidence }) {
     await waitFor(() => js(`document.querySelector('.native-popup-text-status')?.dataset.status === 'ready'`));
     await command(`lua assert(table.concat(vim.api.nvim_buf_get_lines(0,0,-1,false),' '):find('Floating browser popup',1,true))`);
     if (process.env.JUSI_TEST_MEDIA_ONLY === '1') { await mediaGrantCases({guest:child,command}); return; }
+  if (process.env.JUSI_TEST_CODE_ONLY === '1') { await codeProjectionCases({host,guest:child,command,waitFor});return; }
   if (process.env.JUSI_TEST_HINTS_ONLY === '1') { await markHintCases({host,guest:child,command,waitFor});return; }
     if (process.env.JUSI_TEST_POPUP_STABILITY === '1') {
       const setVisible = view.setVisible.bind(view);

@@ -69,7 +69,7 @@ claim across arbitrary sites or machines.
 
 ## Acceptance boundary
 
-A1 remains partial: final trial results and verification are in STATUS. The default
+Final trial results and verification are in STATUS. The user accepted the measured timing for the local alpha on 2026-11-20. The default
 path now has real automatic-publication and host-renderer measurement, including
 cancellation/content checks. Unicode completion has little margin below the document
 deadline, and its first paint remains slow. The 8 ms extraction-slice target has not
@@ -78,6 +78,4 @@ slice execution. Native-adapter end-to-end timing remains wider-plan work while 
 alpha uses the default adapter. Linux, real IME, OS/compositor latency and browser
 security parity are not established.
 
-Further optimization is deferred by user direction on 2026-10-12. Continue A2's
-combined everyday workflow and the remaining local-alpha gates. Retain Unicode
-layout/first-paint and slice-budget assessment as later work; A1 stays partial.
+Further optimization is deferred by user direction on 2026-10-12. Unicode layout/first-paint and slice-budget assessment remain available for future work.

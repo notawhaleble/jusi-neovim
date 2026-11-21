@@ -1,4 +1,4 @@
-import { mediaGrantCases, markHintCases, browserInteractionCases, browserCommandCases } from './browser-interaction-cases.mjs';
+import { codeProjectionCases, mediaGrantCases, markHintCases, browserInteractionCases, browserCommandCases } from './browser-interaction-cases.mjs';
 import { integratedNativePopupCases } from "./native-popup-cases.mjs";
 import { adoptionCases } from "./adoption-cases.mjs";
 import { popupCases } from "./popup-cases.mjs";
@@ -139,7 +139,7 @@ try {
     const { nvimDisplayCases } = await import('./nvim-display-cases.mjs');
     await nvimDisplayCases({win,command,waitFor});return;
   }
-  if (process.env.JUSI_TEST_BROWSER_WORKFLOW !== '1' && process.env.JUSI_TEST_EDITING_ONLY !== '1' && process.env.JUSI_TEST_HINTS_ONLY !== '1') {
+  if (process.env.JUSI_TEST_BROWSER_WORKFLOW !== '1' && process.env.JUSI_TEST_EDITING_ONLY !== '1' && process.env.JUSI_TEST_HINTS_ONLY !== '1' && process.env.JUSI_TEST_CODE_ONLY !== '1') {
     const { nvimIntegrationCases } = await import('./nvim-integration-cases.mjs');
     await nvimIntegrationCases({win, command, waitFor});
     const { nvimMouseCases } = await import("./nvim-mouse-cases.mjs");
@@ -156,6 +156,7 @@ try {
   let guest = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL() === url);
   assert.ok(guest);
   if (process.env.JUSI_TEST_MEDIA_ONLY === '1') { await mediaGrantCases({guest:guest,command}); return; }
+  if (process.env.JUSI_TEST_CODE_ONLY === '1') { await codeProjectionCases({host:win,guest,command,waitFor});return; }
   if (process.env.JUSI_TEST_HINTS_ONLY === '1') { await markHintCases({host:win,guest,command,waitFor});return; }
   if (process.env.JUSI_TEST_EDITING_ONLY === '1') {
     await win.webContents.executeJavaScript("window.jusi.sendInput('i')");

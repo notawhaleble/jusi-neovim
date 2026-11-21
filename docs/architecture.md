@@ -387,6 +387,10 @@ the toggle from Neovim buffer state. Resume catches up; explicit refresh and ini
 can build while paused. Browser readiness and profile render in each window's Vim
 statusline; normal page-level badges are hidden. Visual extraction excludes
 zero-area CSS clips and fully inset accessibility labels, including their descendants.
+Preformatted code maps whitespace and explicit newlines to DOM text offsets.
+The GitHub file viewer uses a presentation-only container for both source and
+line numbers. The extractor includes visible source cells from that container
+and applies normal visibility and editable-control filtering to their contents.
 Ctrl-J activation explicitly carries a user gesture so browser history does not skip
 its navigation. Ordinary link targets are normalized to the current document;
 modified native mouse input and Ctrl-N use the existing Neovim foreground link-tab
