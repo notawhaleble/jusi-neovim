@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import { RendererApi, RendererSessionState } from "../renderer/contracts.js";
 
@@ -80,6 +80,14 @@ const api: RendererApi = {
     ipcRenderer.on("jusi:web-open-active-link", () => {
       listener();
     });
+  },
+  async pasteImage(win, buf) {
+    await ipcRenderer.invoke('jusi:paste-image', win, buf);
+  },
+  async dropFiles(target, files) {
+    await ipcRenderer.invoke('jusi:file-drop', target, files.map(file => ({
+      path: webUtils.getPathForFile(file), media_type: file.type || 'application/octet-stream',
+    })));
   },
   async sendMouse(input) {
     return await ipcRenderer.invoke("jusi:mouse", input);

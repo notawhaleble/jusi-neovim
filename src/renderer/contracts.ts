@@ -52,6 +52,8 @@ export interface RendererApi {
   onAppZoom(listener: (event: { action: "in" | "out" | "reset" }) => void): void;
   onWebZoomed(listener: () => void): void;
   onWebOpenActiveLink(listener: () => void): void;
+  pasteImage(win: number, buf: number): Promise<void>;
+  dropFiles(target: { windowId: number; grid: number; tabId: number; bufferId: number; row: number }, files: File[]): Promise<void>;
   sendMouse(input: NvimMouseInput): Promise<boolean>;
   sendInput(keys: string): Promise<void>;
   sendWindowInput(keys: string): Promise<void>;

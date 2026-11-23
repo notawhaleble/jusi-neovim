@@ -8,6 +8,8 @@
       "status": "partial",
       "evidence": [
         "docs/decisions/0001-presentation-host.md",
+        "runtime/lua/jusi_neovim/attachments.lua",
+        "scripts/image-input-cases.mjs",
         "src/presentation/contracts.ts",
         "src/presentation/backend-registry.ts",
         "docs/decisions/0005-backend-boundaries.md",
@@ -165,6 +167,7 @@
         "docs/decisions/0006-worker-lifecycle.md",
         "runtime/lua/jusi_neovim/worker-guardian.lua",
         "scripts/test-worker-lifecycle.mjs",
+        "scripts/smoke-profiles.mjs",
         "packages/jusi-markdown.nvim/README.md",
         "packages/jusi-markdown.nvim/test/markdown.test.mjs",
         "packages/jusi-markdown.nvim/test/viewer.test.mjs",

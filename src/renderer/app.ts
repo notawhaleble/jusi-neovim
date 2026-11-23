@@ -1696,6 +1696,33 @@ function scheduleRenderState(state: RendererSessionState): void {
 function installPointerRouting(): void {
   const stage = document.querySelector(".stage");
   if (!(stage instanceof HTMLElement)) return;
+  window.addEventListener('paste', event => {
+    if (webModeBufferId !== null || latestState?.cmdline.visible || event.target instanceof HTMLInputElement
+        || event.target instanceof HTMLTextAreaElement || !Array.from(event.clipboardData?.items ?? [])
+          .some(item => item.type === 'image/png')) return;
+    const snapshot = latestState?.snapshot;
+    const tab = snapshot?.tabs.find(t => t.id === snapshot.currentTabId);
+    const owner = snapshot?.windows.find(w => w.id === tab?.currentWindowId);
+    if (!owner) return;
+    event.preventDefault();
+    void window.jusi.pasteImage(owner.id, owner.bufferId);
+  });
+  const imageLayer = (event: DragEvent) => {
+    if (!(event.target instanceof Element) || !event.dataTransfer?.types.includes('Files')) return null;
+    return event.target.closest<HTMLElement>('.grid-layer');
+  };
+  stage.addEventListener('dragover', event => { if (imageLayer(event)) event.preventDefault(); });
+  stage.addEventListener('drop', event => {
+    const layer = imageLayer(event);
+    if (!layer || !event.dataTransfer) return;
+    event.preventDefault();
+    const owner = latestState?.snapshot.windows.find(w => w.id === Number(layer.dataset.windowId)
+      && w.gridId === Number(layer.dataset.gridId) && w.tabId === latestState?.snapshot.currentTabId);
+    if (!owner?.gridId) return;
+    const row = Math.floor((event.clientY - layer.getBoundingClientRect().top) / cellHeight);
+    void window.jusi.dropFiles({ windowId: owner.id, grid: owner.gridId, tabId: owner.tabId,
+      bufferId: owner.bufferId, row }, Array.from(event.dataTransfer.files));
+  });
   installGridMouse(stage, {
     metrics: () => ({ width: cellWidth, height: cellHeight }),
     blocked: () => !latestState || latestState.cmdline.visible || latestState.popupmenu.visible

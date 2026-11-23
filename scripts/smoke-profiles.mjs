@@ -26,12 +26,14 @@ try {
     const previous = webContents.getAllWebContents().filter(c => c.getType() === 'webview').map(c => c.id);
     await command(`JusiWebProfile ${profile}`);
     await command(`${privateMode ? 'JusiWebPrivate' : 'JusiWebBuffer'}! ${url}`);
-    const id = await waitFor(() => win.webContents.executeJavaScript(`(() => {
+    const guest = await waitFor(async () => {
+      const id = await win.webContents.executeJavaScript(`(() => {
       const host = document.querySelector('.web-view-box:not(.web-view-box--parked)');
       const guest = host?.querySelector('webview');
       return guest?.dataset.domReady === '1' && host.querySelector('.presentation-text-status')?.dataset.status === 'disabled' && !${JSON.stringify(previous)}.includes(guest.getWebContentsId()) && guest.getWebContentsId();
-    })()`));
-    const guest = webContents.fromId(id);
+    })()`);
+      return id && webContents.fromId(id);
+    });
     assert.equal(guest.session.isPersistent(), !privateMode);
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector('.web-view-box:not(.web-view-box--parked) .browser-profile-label').textContent`),
       privateMode ? 'Private · this buffer' : `Profile · ${profile}`);
@@ -111,6 +113,10 @@ try {
   }
   console.log(`Profile ${phase} assertions passed`);
   clearTimeout(timeout);
+  // Keep a hidden auxiliary window alive across the final Neovim quit. The
+  // parent runner requires a natural process exit before reopening the profile.
+  const auxiliary = phase === 'seed' ? new BrowserWindow({ show: false }) : undefined;
+  app.once('will-quit', () => { if (auxiliary) assert.ok(auxiliary.isDestroyed()); });
   // Do not flush storage in the harness: prove the real application's exit path.
   await command('qa!').catch(() => {});
 } catch (error) { console.error(error); app.exit(1); }

@@ -576,4 +576,8 @@ _G.jusi_neovim_install_clipboard_provider = function()
   M.install_clipboard_provider(vim.g.jusi_neovim_rpc_channel)
 end
 
+vim.api.nvim_create_user_command('JusiPasteImage', function()
+  require('jusi_neovim.attachments').paste()
+end, {})
+
 return M

@@ -135,6 +135,10 @@ try {
   win = await waitFor(() => BrowserWindow.getAllWindows().find(window => window.isVisible()));
   await waitFor(() => win.webContents.executeJavaScript('typeof window.jusi === "object"').catch(() => false));
   const command = async value => win.webContents.executeJavaScript(`window.jusi.runCommand(${JSON.stringify(value)})`);
+  if (process.env.JUSI_TEST_IMAGE_INPUT === '1') {
+    const {imageInputCases} = await import('./image-input-cases.mjs');
+    await imageInputCases({win, command, waitFor, scratch}); return;
+  }
   if (process.env.JUSI_TEST_DISPLAY_ONLY === '1') {
     const { nvimDisplayCases } = await import('./nvim-display-cases.mjs');
     await nvimDisplayCases({win,command,waitFor});return;

@@ -168,7 +168,9 @@ established; see [browser boundary ADR](decisions/0002-browser-boundary.md).
 
 ## Embedded Neovim transport
 
-`EmbeddedNvimRpcClient` launches Neovim and owns its shutdown. `MsgpackRpc` frames
+`EmbeddedNvimRpcClient` launches Neovim and owns its shutdown. A final Neovim quit closes the primary editor window.
+Closing that window waits for session disposal and then quits Electron, including
+any remaining auxiliary windows. `MsgpackRpc` frames
 requests and notifications using `@msgpack/msgpack`, decodes extension handles to
 numeric IDs, and tracks timeout/error/EOF cleanup. Incoming asynchronous handlers
 can issue nested requests; responses unwind in reverse request order. See
@@ -501,3 +503,8 @@ Native browser placement is retained across text, cursor and mirror-status paint
 Main revokes it on authoritative composition/ownership changes or explicit shell
 geometry/lifecycle invalidation; current invalid or blocked viewport reports park
 views, while identical valid measurements preserve focus (ADR 0051).
+
+The trusted Neovim runtime exposes buffer-scoped file attachment consumers. Clipboard
+paste resolves the active window and buffer. File drop checks the tab, grid,
+window and buffer, then resolves the pointer row against Neovim's visible lines.
+Each consumer resolves its own destination before accepting the files and their media types.

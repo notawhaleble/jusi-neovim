@@ -1,3 +1,87 @@
+# Linux x86-64 test build, 2026-11-23
+
+The portable tar.gz includes file attachments, PNG clipboard capture and the
+primary editor shutdown fix. Cross-built on macOS arm64 with Node 24 and
+Electron 44.5.0. Archive verification matched the Linux ELF x86-64 executable
+to the cached Electron binary and matched 98 application files.
+
+`npm run harness`, `npm run check`, `npm run smoke:profiles`,
+`npm run smoke:electron` and `npm run dist:linux:portable:x64` exited 0.
+`npm run smoke:package` exited 1 at `native-popup-cases.mjs:241`, reproducing
+the recorded timeout waiting for native popup destruction. Packaged clipboard
+PNG and unfocused-grid file drop passed before the timeout. Logs and the file
+manifest are under `.local/review/linux-test-20261123/`. Manual review remains
+deferred for the two queued milestones. Next verify attachment input and editor
+shutdown on Linux and isolate the packaged popup close timeout.
+
+# Primary editor shutdown (macOS arm64)
+
+Closing the primary editor now waits for embedded Neovim disposal and quits
+Electron even when a hidden auxiliary window is still open. The profile restart
+smoke keeps such a window alive during the seed process and requires normal exit.
+
+On Node 24, the original PNG paste, JusiStop and wq workflow exited 0 in an
+isolated profile. Adding a hidden window reproduced the hang (watchdog exit 23)
+and the fixed build exited 0 with the same window and PNG. A separate isolated
+npm run electron session attached a PNG to a notebook, waited for JusiStop to
+finish and exited 0 within 0.16 seconds of wq. The cause of the two reported
+sessions remains unconfirmed. If it recurs, capture the surviving process tree
+before interrupting the launcher.
+
+npm run check, npm run smoke:profiles, npm run smoke:electron and npm run
+smoke:package exited 0. The first two profile runs hit a stale guest ID before
+shutdown. The smoke now waits for live guest contents and passed all three
+phases. Logs are in .local/review/quit-*.log. Manual review deferred for this
+automated lifecycle check (two covered UI milestones queued).
+
+# Single-use file attachments
+
+The shell now supplies filename, MIME type and bytes for dropped files. A PNG
+clipboard capture uses the same consumer callback. The cell queues attachments
+for one successful Jusi operation. Failed and cancelled submissions retain the
+queue. Concurrently attached files survive an earlier acknowledgement, even
+when reattaching identical content. Codex and ACP declare PNG support.
+
+macOS arm64, Node 24. npm run check, npm run smoke:electron and the packaged
+PNG/CSV drop workflow exited 0. npm run smoke:package exited 1 later at
+native-popup-cases.mjs:241 waiting for child destruction after clicking the
+close button. No isolated close-only harness exists. The remaining packaged
+focus, alpha and both browser workflows exited 0 on the same binary. Logs are
+in .local/review/file-suite-*.log and file-package-*.log. Manual review deferred
+for this covered change (one UI milestone). Next isolate the packaged popup
+close timing and verify file input on Linux.
+
+Jusi passed 373 Python tests with one skip and both headless suites. Codex
+passed 93, GigaCode 13, ACP 125 with the previously baseline-reproduced native
+session-features crash deselected. The real ACP fixture received image, plain
+text, then explicitly reattached image. The core HTTP test verified CSV bytes,
+original name and target-side staging cleanup. No deployment performed.
+
+# Transient PNG input, 2026-11-21
+
+The shell delivers clipboard PNGs and dropped PNG files to registered Neovim
+buffer consumers. macOS Command-V, the explicit JusiPasteImage command and a
+drop on the second row of an unfocused split reached the registered consumer.
+The packaged manual shortcut check verified the received bytes and restored the
+system clipboard. The native review used a PNG fixture. Linux desktop input
+remains unverified.
+
+Node 24, macOS arm64. npm run check and npm run smoke:electron exited 0
+(image-check.log, image-desktop.log under .local/review/). npm run smoke:package
+exited 0 (image-package-final.log). The initial native shortcut review failed
+to deliver the paste. The shell now dispatches the editing shortcut explicitly.
+The initial final-package drop check timed out while split geometry changed.
+The fixture now waits for the intended window to be active and hit-tests the
+unfocused destination before dispatch. The packaged manual review and subsequent
+drop both exited 0 (image-package-manual.log). Review covered image input only.
+
+The coordinated Jusi and provider work is in sibling checkouts. Core Python
+passed 373 with one skip, both headless suites passed, Codex passed 93, GigaCode
+passed 13 and ACP passed 125. ACP session_features.lua crashed Neovim 0.11.4
+in both the modified checkout and the pre-change baseline. See image-acp.log,
+image-acp-baseline.log and image-acp-final.log. Next verify a Linux desktop and
+live provider models. No release gate or deployment change.
+
 # Browser code projection, 2026-11-21
 
 The shared DOM extractor projects GitHub file-view source cells and preformatted

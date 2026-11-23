@@ -63,7 +63,7 @@ Use the portable **linux-x64 `.tar.gz`** asset on the existing
 [test prerelease](https://github.com/notawhaleble/jusi-neovim/releases/tag/v0.1.0-test).
 Extract the entire archive into a user-owned directory on a filesystem that permits
 execution (for example `~/Applications/jusi-neovim`), then run the extracted
-`jusi-neovim` executable. The download's `LINUX-TESTING-20261120.md` has exact commands and
+`jusi-neovim` executable. The download's `LINUX-TESTING-20261123.md` has exact commands and
 checksums for that build. Keep the resources beside the executable.
 
 This format needs neither FUSE nor AppImage extraction into `/tmp`. The old
@@ -172,3 +172,13 @@ To capture intermittent browser link/fullscreen failures, see
 `:JusiWebDebugMark` marks the incident and reports its local log directory.
 Ctrl-P immediately shows `Text paused` in the statusline while automatic text
 building is paused.
+
+### File attachments
+
+A trusted buffer consumer registers with `require('jusi_neovim.attachments').register(buf, capture)`.
+`capture(row)` resolves a zero-based buffer row and returns a callback accepting
+an ordered list of `{name, media_type, bytes}` records. Registration returns a
+cleanup function. Drop files onto a visible editor line to target its window
+and row. Screenshot paste uses the system Paste action or `:JusiPasteImage` and
+supplies an `image/png` attachment. A drop with an unknown media type uses
+`application/octet-stream`.

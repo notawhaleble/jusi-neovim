@@ -356,7 +356,7 @@ async function createWindow(): Promise<void> {
   const browserApiInfo = await client.request("nvim_get_api_info", []);
   const browserChannel = Array.isArray(browserApiInfo) ? Number(browserApiInfo[0]) : 0;
   if (!Number.isSafeInteger(browserChannel) || browserChannel <= 0) throw new Error("Browser RPC channel unavailable");
-  await client.request("nvim_exec_lua", ["vim.g.jusi_browser_rpc_channel = ...", [browserChannel]]);
+  await client.request("nvim_exec_lua", ["vim.g.jusi_browser_rpc_channel = ...; vim.g.jusi_neovim_rpc_channel = ...", [browserChannel]]);
   const profileNames = new WeakMap<object, string>();
   const linkControllers = new Map<number, ReturnType<typeof installBrowserLinks>>();
   let nativePopups: NativePopupCoordinator | undefined;
@@ -462,6 +462,14 @@ async function createWindow(): Promise<void> {
       return;
     }
 
+    const pasteShortcut = currentPlatform() === 'darwin'
+      ? input.meta && !input.control && !input.shift
+      : input.control && input.shift && !input.meta;
+    if (pasteShortcut && !input.alt && isPhysicalKeyInput(input, 'KeyV')) {
+      event.preventDefault();
+      win.webContents.paste();
+      return;
+    }
     if (shouldBlockShellAccelerator(input)) {
       event.preventDefault();
     }
@@ -577,11 +585,9 @@ async function createWindow(): Promise<void> {
     flushPendingState();
     win.webContents.send("jusi:web-enter-mode", event);
   });
-  let neovimExited = false;
   session.onExit(() => {
     closing = true;
     for (const guest of guests.values()) if (guest.sessionId) documents.forget(guest.sessionId);
-    neovimExited = true;
     const destroyed = (win as unknown as { isDestroyed?: () => boolean }).isDestroyed?.() ?? false;
     if (!destroyed) {
       win.close();
@@ -598,6 +604,17 @@ async function createWindow(): Promise<void> {
       return clipboard.readText().then(registerFromClipboardText);
     });
   }
+
+  client.onRequest?.(request => {
+    if (request.method !== 'jusi:image-paste') return undefined;
+    return clipboard.read().then(async items => {
+      const item = items.find(candidate => candidate.types.includes('image/png'));
+      if (!item) return '';
+      const blob = await item.getType('image/png');
+      if (blob.size > 16 * 1024 * 1024) throw new Error('Image input exceeds 16 MiB');
+      return Buffer.from(await blob.arrayBuffer()).toString('base64');
+    });
+  });
 
   const [contentWidth, contentHeight] = win.getContentSize();
   const grid = estimateGrid(contentWidth, contentHeight);
@@ -896,6 +913,21 @@ async function createWindow(): Promise<void> {
     return session.getInteractionView(windowId, ticket) ?? null;
   });
 
+  ipcMain.handle("jusi:paste-image", async (event, winId, buf) => {
+    assertShell(event);
+    await client.request('nvim_exec_lua', [`local win, buf = ...
+      if vim.api.nvim_get_current_win() ~= win or vim.api.nvim_get_current_buf() ~= buf then return end
+      local ok, err = pcall(require('jusi_neovim.attachments').paste)
+      if not ok then vim.notify(tostring(err), vim.log.levels.WARN) end`, [winId, buf]]);
+  });
+  ipcMain.handle("jusi:file-drop", async (event, target, paths) => {
+    assertShell(event);
+    const snapshot = session.getSnapshot();
+    if (target.tabId !== snapshot.currentTabId || !snapshot.windows.some(w => w.id === target.windowId
+        && w.gridId === target.grid && w.bufferId === target.bufferId && w.tabId === target.tabId)) return;
+    await client.request('nvim_exec_lua', [`local ok, err = pcall(require('jusi_neovim.attachments').drop, ...)
+      if not ok then vim.notify(tostring(err), vim.log.levels.WARN) end`, [target, paths]]);
+  });
   ipcMain.handle("jusi:mouse", async (event: unknown, input: import("../core/mouse.js").NvimMouseInput) => {
     assertShell(event);
     return await session.mouseInput(input);
@@ -1059,6 +1091,8 @@ async function createWindow(): Promise<void> {
     ipcMain.removeHandler("jusi:close-native-popup");
     ipcMain.removeHandler("jusi:retry-native-text");
     ipcMain.removeHandler("jusi:invalidate-native-viewport");
+    ipcMain.removeHandler("jusi:file-drop");
+    ipcMain.removeHandler("jusi:paste-image");
     ipcMain.removeHandler("jusi:mouse");
     ipcMain.removeHandler("jusi:input");
     ipcMain.removeHandler("jusi:window-input");
@@ -1076,8 +1110,12 @@ async function createWindow(): Promise<void> {
     ipcMain.removeHandler("jusi:open-browser-link");
     ipcMain.removeHandler("jusi:arm-popup");
     ipcMain.removeAllListeners("jusi:perf");
-    if (!neovimExited) {
+    try {
       await session.dispose();
+    } catch (error) {
+      console.error("[editor-shutdown]", error);
+    } finally {
+      app.quit();
     }
   });
 
@@ -1112,11 +1150,8 @@ app.whenReady().then(async () => {
     app.exit(1);
     return;
   }
-  app.on("activate", () => {
-    // noop for now
-  });
 });
 
 app.on("window-all-closed", () => {
-  app.quit();
+  // Override Electron's default quit while the primary editor finishes disposal.
 });

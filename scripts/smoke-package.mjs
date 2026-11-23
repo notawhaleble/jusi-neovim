@@ -16,7 +16,7 @@ const config = join(output, "builder.json");
 writeFileSync(config, JSON.stringify({
   ...manifest.build,
   directories: { ...manifest.build.directories, output: join(output, "build") },
-  files: [...manifest.build.files, "scripts/smoke-electron.mjs", "scripts/nvim-integration-cases.mjs", "scripts/nvim-mouse-cases.mjs", "scripts/nvim-overlay-cases.mjs", "scripts/nvim-display-cases.mjs", "scripts/sandbox-evidence.mjs", "scripts/popup-cases.mjs", "scripts/adoption-cases.mjs", "scripts/native-popup-cases.mjs", "scripts/browser-interaction-cases.mjs", "scripts/browser-workflow-cases.mjs", "scripts/alpha-workflow-cases.mjs", "scripts/fixtures/source-viewer/**/*"],
+  files: [...manifest.build.files, "scripts/smoke-electron.mjs", "scripts/image-input-cases.mjs", "scripts/nvim-integration-cases.mjs", "scripts/nvim-mouse-cases.mjs", "scripts/nvim-overlay-cases.mjs", "scripts/nvim-display-cases.mjs", "scripts/sandbox-evidence.mjs", "scripts/popup-cases.mjs", "scripts/adoption-cases.mjs", "scripts/native-popup-cases.mjs", "scripts/browser-interaction-cases.mjs", "scripts/browser-workflow-cases.mjs", "scripts/alpha-workflow-cases.mjs", "scripts/fixtures/source-viewer/**/*"],
   extraMetadata: { ...manifest.build.extraMetadata, main: "scripts/smoke-electron.mjs" },
 }, null, 2));
 function run(command, args, extraEnv = {}) {
@@ -35,7 +35,10 @@ const platformDir = process.platform === "darwin"
 const executable = process.platform === "darwin"
   ? join(output, "build", platformDir, "Jusi Neovim.app", "Contents/MacOS/Jusi Neovim")
   : join(output, "build", platformDir, "jusi-neovim");
-if (!focusOnly && !workflowOnly) await run(process.execPath, ["scripts/run-smoke-electron.mjs", "--package", executable]);
+if (!focusOnly && !workflowOnly) {
+  await run(process.execPath, ["scripts/run-smoke-electron.mjs", "--package", executable], { JUSI_TEST_IMAGE_INPUT: "1" });
+  await run(process.execPath, ["scripts/run-smoke-electron.mjs", "--package", executable]);
+}
 
 if (!workflowOnly) await run(process.execPath, ["scripts/run-smoke-electron.mjs", "--package", executable], { JUSI_TEST_NATIVE_POPUPS: "1", ...(focusOnly ? { JUSI_TEST_FOCUS_ONLY: "1" } : {}) });
 
